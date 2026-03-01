@@ -1,6 +1,7 @@
 import {
   IsArray,
-  IsEnum,
+  IsIn,
+  IsObject,
   IsOptional,
   IsString,
   MaxLength,
@@ -28,6 +29,7 @@ export class UpdateProductDto {
   category?: string[];
 
   @IsOptional()
+  @IsObject()
   attributes?: Record<string, string>;
 
   @IsOptional()
@@ -37,7 +39,7 @@ export class UpdateProductDto {
   variants?: ProductVariantDto[];
 
   @IsOptional()
-  @IsEnum(["draft", "published", "archived"])
+  @IsIn(["draft", "published", "archived"])
   status?: "draft" | "published" | "archived";
 
   @IsOptional()
