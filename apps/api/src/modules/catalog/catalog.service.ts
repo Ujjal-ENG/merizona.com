@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -6,9 +7,10 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { DataSource, EntityManager, Repository } from "typeorm";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { PaginatedResponse } from "../../common/interfaces";
+import { Inventory } from "../inventory/schemas/inventory.schema";
 import { Vendor } from "../vendors/schemas/vendor.schema";
 import { CreateProductDto } from "./dto/create-product.dto";
 import { UpdateProductDto } from "./dto/update-product.dto";
@@ -21,39 +23,81 @@ export class CatalogService {
   constructor(
     @InjectRepository(Product)
     private readonly productRepository: Repository<Product>,
+    @InjectRepository(Inventory)
+    private readonly inventoryRepository: Repository<Inventory>,
+    private readonly dataSource: DataSource,
   ) {}
 
   /**
-   * Create product — vendor-scoped. Generates slug and validates uniqueness.
+   * Create product — vendor-scoped. Generates a unique slug and ensures SKU consistency.
    */
   async create(
     vendorId: string,
     dto: CreateProductDto,
   ): Promise<ProductDocument> {
-    const slug = this.generateSlug(dto.title);
-    const exists = await this.productRepository.findOne({ where: { slug } });
-    if (exists) {
-      throw new ConflictException("Product with this title already exists");
+    const normalizedTitle = dto.title.trim();
+    const normalizedVariants = this.normalizeVariants(dto.variants ?? []);
+    const nextStatus = dto.status ?? "draft";
+
+    if (nextStatus === "published" && normalizedVariants.length === 0) {
+      throw new BadRequestException(
+        "At least one product variant is required to publish",
+      );
     }
 
-    const product = await this.productRepository.save(
-      this.productRepository.create({
-        vendorId,
-        title: dto.title,
-        slug,
-        description: dto.description,
-        category: dto.category || [],
-        attributes: dto.attributes || {},
-        variants: dto.variants || [],
-        status: dto.status || "draft",
-        tags: dto.tags || [],
-      }),
-    );
+    await this.assertNoSkuConflicts(normalizedVariants.map((variant) => variant.sku));
 
-    this.logger.log(
-      `Product created: ${product.title} (${product._id}) by vendor ${vendorId}`,
-    );
-    return product;
+    const slug = await this.generateUniqueSlug(normalizedTitle);
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const productRepository = queryRunner.manager.getRepository(Product);
+      const inventoryRepository = queryRunner.manager.getRepository(Inventory);
+
+      const product = await productRepository.save(
+        productRepository.create({
+          vendorId,
+          title: normalizedTitle,
+          slug,
+          description: dto.description?.trim(),
+          category: this.normalizeStringArray(dto.category),
+          attributes: this.normalizeAttributes(dto.attributes),
+          variants: normalizedVariants,
+          status: nextStatus,
+          tags: this.normalizeStringArray(dto.tags),
+        }),
+      );
+
+      if (normalizedVariants.length > 0) {
+        await inventoryRepository.save(
+          normalizedVariants.map((variant) =>
+            inventoryRepository.create({
+              productId: product._id,
+              vendorId,
+              sku: variant.sku,
+              quantityOnHand: 0,
+              quantityReserved: 0,
+            }),
+          ),
+        );
+      }
+
+      await queryRunner.commitTransaction();
+
+      this.logger.log(
+        `Product created: ${product.title} (${product._id}) by vendor ${vendorId}`,
+      );
+
+      return product;
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   /**
@@ -151,10 +195,12 @@ export class CatalogService {
       "status",
     ]);
 
+    const normalizedStatus = this.pickStatus(status);
+
     const [data, total] = await this.productRepository.findAndCount({
       where: {
         vendorId,
-        ...(status ? { status: status as Product["status"] } : {}),
+        ...(normalizedStatus ? { status: normalizedStatus } : {}),
       },
       order: { [sortField]: order === "asc" ? "ASC" : "DESC" } as any,
       skip: (page - 1) * limit,
@@ -167,6 +213,21 @@ export class CatalogService {
     };
   }
 
+  async findOneByVendor(
+    productId: string,
+    vendorId: string,
+  ): Promise<ProductDocument> {
+    const product = await this.productRepository.findOne({
+      where: { _id: productId, vendorId },
+    });
+
+    if (!product) {
+      throw new NotFoundException("Product not found");
+    }
+
+    return product;
+  }
+
   async update(
     productId: string,
     vendorId: string,
@@ -175,6 +236,7 @@ export class CatalogService {
     const product = await this.productRepository.findOne({
       where: { _id: productId },
     });
+
     if (!product) {
       throw new NotFoundException("Product not found");
     }
@@ -184,17 +246,79 @@ export class CatalogService {
       throw new ForbiddenException("You do not own this product");
     }
 
-    if (dto.title) product.title = dto.title;
-    if (dto.description !== undefined) product.description = dto.description;
-    if (dto.category) product.category = dto.category;
-    if (dto.attributes) product.attributes = dto.attributes;
-    if (dto.variants) product.variants = dto.variants as Product["variants"];
-    if (dto.status) product.status = dto.status;
-    if (dto.tags) product.tags = dto.tags;
+    const normalizedVariants =
+      dto.variants !== undefined
+        ? this.normalizeVariants(dto.variants)
+        : product.variants;
 
-    const updated = await this.productRepository.save(product);
-    this.logger.log(`Product updated: ${updated.title} (${updated._id})`);
-    return updated;
+    const nextStatus = dto.status ?? product.status;
+    if (nextStatus === "published" && normalizedVariants.length === 0) {
+      throw new BadRequestException(
+        "At least one product variant is required to publish",
+      );
+    }
+
+    if (dto.variants !== undefined) {
+      await this.assertNoSkuConflicts(
+        normalizedVariants.map((variant) => variant.sku),
+        product._id,
+      );
+      product.variants = normalizedVariants;
+    }
+
+    if (dto.title) {
+      const normalizedTitle = dto.title.trim();
+      product.title = normalizedTitle;
+      product.slug = await this.generateUniqueSlug(normalizedTitle, product._id);
+    }
+
+    if (dto.description !== undefined) {
+      product.description = dto.description?.trim();
+    }
+
+    if (dto.category !== undefined) {
+      product.category = this.normalizeStringArray(dto.category);
+    }
+
+    if (dto.attributes !== undefined) {
+      product.attributes = this.normalizeAttributes(dto.attributes);
+    }
+
+    if (dto.status) {
+      product.status = dto.status;
+    }
+
+    if (dto.tags !== undefined) {
+      product.tags = this.normalizeStringArray(dto.tags);
+    }
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const productRepository = queryRunner.manager.getRepository(Product);
+      const updated = await productRepository.save(product);
+
+      if (dto.variants !== undefined) {
+        await this.syncInventoryForVariants(
+          queryRunner.manager,
+          updated._id,
+          vendorId,
+          normalizedVariants,
+        );
+      }
+
+      await queryRunner.commitTransaction();
+      this.logger.log(`Product updated: ${updated.title} (${updated._id})`);
+
+      return updated;
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   async delete(productId: string, vendorId: string): Promise<void> {
@@ -215,20 +339,205 @@ export class CatalogService {
     this.logger.log(`Product archived: ${product.title} (${product._id})`);
   }
 
-  private generateSlug(title: string): string {
-    const base = title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "");
-    const suffix = Math.random().toString(36).substring(2, 6);
-    return `${base}-${suffix}`;
+  private async generateUniqueSlug(
+    title: string,
+    ignoreProductId?: string,
+  ): Promise<string> {
+    const baseSlug =
+      title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "") || "product";
+
+    let candidate = baseSlug;
+    let suffix = 2;
+
+    while (true) {
+      const existing = await this.productRepository.findOne({
+        where: { slug: candidate },
+      });
+
+      if (!existing || existing._id === ignoreProductId) {
+        return candidate;
+      }
+
+      candidate = `${baseSlug}-${suffix}`;
+      suffix += 1;
+    }
   }
 
   private pickSortField(sort: string, allowed: string[]): string {
     return allowed.includes(sort) ? sort : "createdAt";
   }
 
-  private withVendorSummary(product: Product & { vendor?: Vendor }): Product {
+  private pickStatus(status?: string): Product["status"] | undefined {
+    if (!status) {
+      return undefined;
+    }
+
+    if (["draft", "published", "archived"].includes(status)) {
+      return status as Product["status"];
+    }
+
+    return undefined;
+  }
+
+  private normalizeVariants(
+    variants: CreateProductDto["variants"],
+  ): Product["variants"] {
+    const normalized = (variants ?? []).map((variant) => {
+      const sku = variant.sku.trim();
+      const label = variant.label.trim();
+
+      if (!sku || !label) {
+        throw new BadRequestException("Variant SKU and label are required");
+      }
+
+      return {
+        sku,
+        label,
+        priceInCents: variant.priceInCents,
+        compareAtPriceInCents: variant.compareAtPriceInCents,
+        images: this.normalizeStringArray(variant.images),
+      };
+    });
+
+    const duplicateSkus = this.findDuplicates(normalized.map((variant) => variant.sku));
+    if (duplicateSkus.length > 0) {
+      throw new BadRequestException(
+        `Duplicate variant SKUs are not allowed: ${duplicateSkus.join(", ")}`,
+      );
+    }
+
+    return normalized;
+  }
+
+  private normalizeAttributes(
+    attributes?: Record<string, string>,
+  ): Record<string, string> {
+    if (!attributes) {
+      return {};
+    }
+
+    const normalized: Record<string, string> = {};
+
+    for (const [rawKey, rawValue] of Object.entries(attributes)) {
+      const key = rawKey.trim();
+      const value = (rawValue ?? "").toString().trim();
+
+      if (!key || !value) {
+        continue;
+      }
+
+      normalized[key] = value;
+    }
+
+    return normalized;
+  }
+
+  private normalizeStringArray(values?: string[]): string[] {
+    if (!values || values.length === 0) {
+      return [];
+    }
+
+    return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+  }
+
+  private findDuplicates(values: string[]): string[] {
+    const seen = new Set<string>();
+    const duplicates = new Set<string>();
+
+    for (const value of values) {
+      if (seen.has(value)) {
+        duplicates.add(value);
+      } else {
+        seen.add(value);
+      }
+    }
+
+    return [...duplicates];
+  }
+
+  private async assertNoSkuConflicts(
+    skus: string[],
+    ignoreProductId?: string,
+  ): Promise<void> {
+    if (skus.length === 0) {
+      return;
+    }
+
+    const qb = this.inventoryRepository
+      .createQueryBuilder("inventory")
+      .select("inventory.sku", "sku")
+      .where("inventory.sku IN (:...skus)", { skus });
+
+    if (ignoreProductId) {
+      qb.andWhere("inventory.productId <> :ignoreProductId", { ignoreProductId });
+    }
+
+    const conflicts = await qb.getRawMany<{ sku: string }>();
+
+    if (conflicts.length > 0) {
+      throw new ConflictException(
+        `The following SKUs already exist: ${conflicts
+          .map((item) => item.sku)
+          .join(", ")}`,
+      );
+    }
+  }
+
+  private async syncInventoryForVariants(
+    manager: EntityManager,
+    productId: string,
+    vendorId: string,
+    variants: Product["variants"],
+  ): Promise<void> {
+    const inventoryRepository = manager.getRepository(Inventory);
+
+    const existingItems = await inventoryRepository.find({
+      where: { productId },
+    });
+
+    const nextSkus = new Set(variants.map((variant) => variant.sku));
+    const removableItems = existingItems.filter((item) => !nextSkus.has(item.sku));
+
+    const blockedRemovals = removableItems.filter(
+      (item) => item.quantityOnHand > 0 || item.quantityReserved > 0,
+    );
+
+    if (blockedRemovals.length > 0) {
+      throw new BadRequestException(
+        `Cannot remove variants with existing inventory: ${blockedRemovals
+          .map((item) => item.sku)
+          .join(", ")}`,
+      );
+    }
+
+    if (removableItems.length > 0) {
+      await inventoryRepository.remove(removableItems);
+    }
+
+    const existingSkus = new Set(existingItems.map((item) => item.sku));
+    const newInventoryItems = variants
+      .filter((variant) => !existingSkus.has(variant.sku))
+      .map((variant) =>
+        inventoryRepository.create({
+          productId,
+          vendorId,
+          sku: variant.sku,
+          quantityOnHand: 0,
+          quantityReserved: 0,
+        }),
+      );
+
+    if (newInventoryItems.length > 0) {
+      await inventoryRepository.save(newInventoryItems);
+    }
+  }
+
+  private withVendorSummary(
+    product: Product & { vendor?: Vendor },
+  ): Product & { vendorName?: string } {
     if (!product.vendor) {
       return product;
     }
@@ -237,12 +546,7 @@ export class CatalogService {
 
     return {
       ...rest,
-      vendorId: {
-        _id: vendor._id,
-        name: vendor.name,
-        slug: vendor.slug,
-        logo: vendor.logo,
-      } as any,
+      vendorName: vendor.name,
     };
   }
 }
