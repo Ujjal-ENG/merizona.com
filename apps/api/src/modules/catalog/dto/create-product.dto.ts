@@ -1,8 +1,9 @@
 import { Type } from "class-transformer";
 import {
   IsArray,
-  IsEnum,
+  IsIn,
   IsInt,
+  IsObject,
   IsOptional,
   IsString,
   MaxLength,
@@ -52,6 +53,7 @@ export class CreateProductDto {
   category?: string[];
 
   @IsOptional()
+  @IsObject()
   attributes?: Record<string, string>;
 
   @IsOptional()
@@ -61,7 +63,7 @@ export class CreateProductDto {
   variants?: ProductVariantDto[];
 
   @IsOptional()
-  @IsEnum(["draft", "published"])
+  @IsIn(["draft", "published"])
   status?: "draft" | "published";
 
   @IsOptional()
