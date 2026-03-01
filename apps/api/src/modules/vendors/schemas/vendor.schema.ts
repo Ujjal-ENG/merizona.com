@@ -9,6 +9,15 @@ import {
   UpdateDateColumn,
 } from "typeorm";
 
+export const VENDOR_PACKAGE_TIERS = [
+  "starter",
+  "growth",
+  "scale",
+] as const;
+
+export type VendorPackageTier = (typeof VENDOR_PACKAGE_TIERS)[number];
+export type VendorPackageStatus = "active" | "inactive";
+
 export interface BusinessInfo {
   legalName: string;
   taxId?: string;
@@ -52,6 +61,23 @@ export class Vendor {
 
   @Column({ type: "double precision", default: 0.12 })
   commissionRate: number;
+
+  @Column({
+    type: "varchar",
+    length: 20,
+    default: "starter",
+  })
+  packageTier: VendorPackageTier;
+
+  @Column({ type: "int", default: 1999 })
+  packagePriceInCents: number;
+
+  @Column({
+    type: "varchar",
+    length: 20,
+    default: "active",
+  })
+  packageStatus: VendorPackageStatus;
 
   @CreateDateColumn({ type: "timestamptz" })
   createdAt: Date;
