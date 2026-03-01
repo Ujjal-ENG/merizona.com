@@ -47,6 +47,9 @@ export class CaslAbilityFactory {
     if (user.vendorId && user.membership) {
       const perms = user.membership.permissions;
 
+      // All vendor members can read their own vendor profile.
+      can("read", "Vendor", { _id: user.vendorId } as any);
+
       // Product management
       if (perms.includes("manage_products")) {
         can("create", "Product");
