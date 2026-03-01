@@ -25,6 +25,8 @@ export class CatalogService {
     private readonly productRepository: Repository<Product>,
     @InjectRepository(Inventory)
     private readonly inventoryRepository: Repository<Inventory>,
+    @InjectRepository(Vendor)
+    private readonly vendorRepository: Repository<Vendor>,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -35,6 +37,8 @@ export class CatalogService {
     vendorId: string,
     dto: CreateProductDto,
   ): Promise<ProductDocument> {
+    await this.assertVendorCanOperate(vendorId);
+
     const normalizedTitle = dto.title.trim();
     const normalizedVariants = this.normalizeVariants(dto.variants ?? []);
     const nextStatus = dto.status ?? "draft";
@@ -180,6 +184,8 @@ export class CatalogService {
     vendorId: string,
     query: PaginationDto & { status?: string },
   ): Promise<PaginatedResponse<ProductDocument>> {
+    await this.assertVendorCanOperate(vendorId);
+
     const {
       page = 1,
       limit = 20,
@@ -217,6 +223,8 @@ export class CatalogService {
     productId: string,
     vendorId: string,
   ): Promise<ProductDocument> {
+    await this.assertVendorCanOperate(vendorId);
+
     const product = await this.productRepository.findOne({
       where: { _id: productId, vendorId },
     });
@@ -233,6 +241,8 @@ export class CatalogService {
     vendorId: string,
     dto: UpdateProductDto,
   ): Promise<ProductDocument> {
+    await this.assertVendorCanOperate(vendorId);
+
     const product = await this.productRepository.findOne({
       where: { _id: productId },
     });
@@ -322,6 +332,8 @@ export class CatalogService {
   }
 
   async delete(productId: string, vendorId: string): Promise<void> {
+    await this.assertVendorCanOperate(vendorId);
+
     const product = await this.productRepository.findOne({
       where: { _id: productId },
     });
@@ -548,5 +560,24 @@ export class CatalogService {
       ...rest,
       vendorName: vendor.name,
     };
+  }
+
+  private async assertVendorCanOperate(vendorId: string): Promise<void> {
+    const vendor = await this.vendorRepository.findOne({ where: { _id: vendorId } });
+    if (!vendor) {
+      throw new NotFoundException("Vendor not found");
+    }
+
+    if (vendor.status !== "approved") {
+      throw new ForbiddenException(
+        "Vendor must be approved by admin before uploading products",
+      );
+    }
+
+    if (vendor.packageStatus !== "active") {
+      throw new ForbiddenException(
+        "Vendor package must be active before running the business",
+      );
+    }
   }
 }
