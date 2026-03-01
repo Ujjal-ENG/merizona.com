@@ -1,11 +1,13 @@
 import { Type } from "class-transformer";
 import {
+  IsIn,
   IsOptional,
   IsString,
   MaxLength,
   MinLength,
   ValidateNested,
 } from "class-validator";
+import { VENDOR_PACKAGE_TIERS, VendorPackageTier } from "../schemas/vendor.schema";
 
 export class BusinessInfoDto {
   @IsString()
@@ -48,4 +50,7 @@ export class ApplyVendorDto {
   @ValidateNested()
   @Type(() => BusinessInfoDto)
   businessInfo?: BusinessInfoDto;
+
+  @IsIn(VENDOR_PACKAGE_TIERS)
+  packageTier: VendorPackageTier;
 }
