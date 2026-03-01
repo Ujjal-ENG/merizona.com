@@ -1,0 +1,896 @@
+# Merizona — Multi-Vendor Marketplace Architecture
+
+> **Assumptions stated upfront:**
+>
+> 1. Scale target: hundreds–low-thousands of vendors, not millions (modular monolith, not day-1 microservices).
+> 2. Production MongoDB runs as a Replica Set (Atlas or self-managed) — required for change streams and transactions.
+> 3. Payment processing via Stripe Connect (Standard accounts per vendor).
+> 4. Shipping aggregator (Shippo / EasyPost) rather than direct carrier APIs.
+> 5. Single geographic region initially; CDN (CloudFront/Cloudflare) in front of Next.js.
+
+---
+
+## 1. Architecture Overview
+
+### Component Map
+
+```mermaid
+graph TB
+    subgraph "Client Layer"
+        B["Browser / Mobile Web"]
+    end
+
+    subgraph "Edge / CDN"
+        CF["Cloudflare / CloudFront"]
+    end
+
+    subgraph "Frontend – Next.js 16+"
+        SC["Server Components (RSC)"]
+        SA["Server Actions"]
+        RH["Route Handlers (BFF)"]
+    end
+
+    subgraph "Backend – NestJS 11+"
+        GW["HTTP Gateway (Fastify)"]
+        MOD["Domain Modules"]
+        WK["Bull Workers (Redis)"]
+        EVT["EventEmitter2 (in-proc)"]
+    end
+
+    subgraph "Data Layer"
+        MDB["MongoDB (System of Record)"]
+        RD["Redis (Cache + Queues)"]
+        ES["Elasticsearch (Derived Index)"]
+        MIO["MinIO / S3 (Objects)"]
+    end
+
+    subgraph "External Services"
+        STRIPE["Stripe (Payments)"]
+        SHIPPO["Shippo (Shipping)"]
+    end
+
+    B --> CF --> SC
+    SC --> |"fetch (internal network)"| GW
+    SA --> |"POST (internal network)"| GW
+    RH --> |"proxy/aggregate"| GW
+    GW --> MOD
+    MOD --> MDB
+    MOD --> RD
+    MOD --> ES
+    MOD --> MIO
+    MOD --> STRIPE
+    MOD --> SHIPPO
+    MOD --> EVT
+    EVT --> WK
+    WK --> ES
+    WK --> RD
+```
+
+### Responsibilities
+
+| Component         | Responsibility                                                                                              |
+| ----------------- | ----------------------------------------------------------------------------------------------------------- |
+| **Next.js**       | SSR/SSG storefront, auth cookie management, BFF aggregation, CSRF-safe mutations via Server Actions         |
+| **NestJS**        | Business logic, RBAC enforcement, data validation, background jobs (BullMQ on Redis), event-driven indexing |
+| **MongoDB**       | ACID transactions for checkout, system of record for all domain data                                        |
+| **Redis**         | API response cache (Keyv), BullMQ job queues, rate-limit counters, session store                            |
+| **Elasticsearch** | Full-text product search, faceted filtering, autocomplete — read-only derived index                         |
+| **MinIO**         | Product images, vendor logos, invoice PDFs — presigned URL upload/download                                  |
+| **Stripe**        | Payment processing (Stripe Connect), vendor payouts, webhook events for payment lifecycle                   |
+
+### Data Flow (Happy Path: Customer Purchase)
+
+1. Browser → Next.js RSC fetches product page (cached via `fetch` + `revalidate`).
+2. "Add to Cart" → Server Action → NestJS `POST /cart/items`.
+3. Checkout → Server Action → NestJS `POST /orders/checkout` (MongoDB transaction: reserve inventory → create order → insert outbox event).
+4. BullMQ worker picks up `OrderCreated` job → sends confirmation email, notifies vendor, triggers Shippo label creation.
+5. Shippo webhook → NestJS `POST /webhooks/shipping` → updates `shipments` → pushes SSE/WebSocket event to customer tracking page.
+
+---
+
+## 2. Next.js App Router Folder Structure
+
+```text
+src/
+├── app/
+│   ├── (storefront)/                    # Public customer-facing
+│   │   ├── layout.tsx                   # Nav + footer + cart icon
+│   │   ├── page.tsx                     # Homepage (ISR 60s)
+│   │   ├── products/
+│   │   │   ├── page.tsx                 # Search/listing (ES-backed)
+│   │   │   └── [slug]/
+│   │   │       ├── page.tsx             # PDP (ISR 300s)
+│   │   │       └── loading.tsx
+│   │   ├── cart/page.tsx
+│   │   ├── checkout/page.tsx
+│   │   └── track/[orderId]/page.tsx     # Order tracking (SSE live)
+│   │
+│   ├── (auth)/                          # Login / Register / Forgot
+│   │   ├── login/page.tsx
+│   │   ├── register/page.tsx
+│   │   └── layout.tsx                   # Centered card layout
+│   │
+│   ├── (dashboards)/                    # All protected dashboards
+│   │   ├── layout.tsx                   # Sidebar shell + auth gate
+│   │   ├── admin/                       # /admin — Platform admin
+│   │   │   ├── layout.tsx
+│   │   │   ├── page.tsx                 # KPI dashboard
+│   │   │   ├── vendors/page.tsx         # Approve/suspend vendors
+│   │   │   ├── users/page.tsx
+│   │   │   └── orders/page.tsx
+│   │   ├── vendor/                      # /vendor — Vendor console
+│   │   │   ├── layout.tsx
+│   │   │   ├── page.tsx                 # Sales dashboard
+│   │   │   ├── products/
+│   │   │   │   ├── page.tsx             # Product list
+│   │   │   │   └── [id]/edit/page.tsx
+│   │   │   ├── orders/page.tsx
+│   │   │   ├── inventory/page.tsx
+│   │   │   └── settings/page.tsx
+│   │   └── account/                     # /account — Customer dashboard
+│   │       ├── layout.tsx
+│   │       ├── page.tsx                 # Profile
+│   │       ├── orders/
+│   │       │   ├── page.tsx             # Order history
+│   │       │   └── [id]/page.tsx        # Order detail + tracking
+│   │       └── addresses/page.tsx
+│   │
+│   ├── api/                             # Route Handlers (BFF only)
+│   │   ├── auth/[...nextauth]/route.ts  # NextAuth (if needed)
+│   │   └── webhooks/
+│   │       └── stripe/route.ts          # Stripe webhook proxy
+│   │
+│   ├── _components/                     # Shared UI (shadcn/ui based)
+│   │   ├── ui/                          # shadcn primitives
+│   │   ├── product-card.tsx
+│   │   ├── order-timeline.tsx
+│   │   └── data-table.tsx
+│   ├── _services/                       # All API calls to NestJS
+│   │   ├── api-client.ts                # Base fetch wrapper w/ cookie forwarding
+│   │   ├── catalog.service.ts
+│   │   ├── orders.service.ts
+│   │   ├── auth.service.ts
+│   │   ├── vendor.service.ts
+│   │   └── tracking.service.ts
+│   ├── _lib/                            # Utilities
+│   │   ├── validations/                 # Zod schemas (shared w/ RHF)
+│   │   ├── constants.ts
+│   │   └── utils.ts
+│   └── _hooks/                          # Client hooks
+│       ├── use-cart.ts
+│       └── use-tracking-sse.ts
+├── middleware.ts                         # Auth redirect + role gating
+└── next.config.ts
+```
+
+---
+
+## 3. API Calling Architecture
+
+### When to Call NestJS Directly from Server Components
+
+**Use case:** Read-only data fetching where no client-side state or cookie manipulation is needed.
+
+```typescript
+// src/app/_services/api-client.ts
+import { cookies } from "next/headers";
+
+const API_BASE = process.env.NEST_INTERNAL_URL; // e.g. http://api:3001
+
+export async function apiFetch<T>(
+  path: string,
+  opts: { revalidate?: number; tags?: string[] } = {},
+): Promise<T> {
+  const cookieStore = await cookies();
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: {
+      Cookie: cookieStore.toString(), // Forward auth cookie
+      "X-Internal-Token": process.env.INTERNAL_SECRET!, // Service-to-service
+    },
+    next: {
+      revalidate: opts.revalidate ?? 60,
+      tags: opts.tags,
+    },
+  });
+  if (!res.ok) throw new ApiError(res.status, await res.text());
+  return res.json();
+}
+```
+
+```typescript
+// src/app/(storefront)/products/[slug]/page.tsx
+import { apiFetch } from '@/app/_services/api-client';
+
+export default async function ProductPage({ params }: { params: { slug: string } }) {
+  const product = await apiFetch<Product>(`/api/v1/catalog/products/${params.slug}`, {
+    revalidate: 300,
+    tags: [`product-${params.slug}`],
+  });
+  return <ProductDetail product={product} />;
+}
+```
+
+### When to Use Route Handlers as BFF
+
+1. **Webhook receivers** — Stripe/shipping webhooks need raw body access for signature verification. Route Handlers give you the raw `Request` object.
+2. **Aggregation** — Composing data from multiple NestJS endpoints into one response for a complex dashboard widget.
+3. **Stream proxying** — SSE streams for order tracking that need to be proxied from NestJS.
+
+### Auth Cookies & CSRF Safety
+
+| Concern                   | Solution                                                                                                                                                                            |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Auth token storage**    | `HttpOnly`, `Secure`, `SameSite=Lax` cookie set by NestJS `/auth/login` response. Next.js forwards it via `cookies().toString()`.                                                   |
+| **CSRF on mutations**     | Server Actions in Next.js 14+ have built-in CSRF protection (origin checking). For Route Handlers accepting POST from client JS, use `SameSite=Lax` + Double-Submit Cookie pattern. |
+| **Token refresh**         | NestJS issues short-lived access token (15min) + long-lived refresh token (7d, rotated). Refresh is `HttpOnly` cookie; access token is also cookie-based (not localStorage).        |
+| **Internal service auth** | Next.js → NestJS calls include `X-Internal-Token` header (shared secret, rotated via env). NestJS guard validates this for internal-only endpoints.                                 |
+
+---
+
+## 4. NestJS Module Breakdown
+
+### Module Dependency Graph
+
+```mermaid
+graph LR
+    Auth --> Users
+    Users --> Vendors
+    Catalog --> Vendors
+    Catalog --> Search
+    Inventory --> Catalog
+    Orders --> Inventory
+    Orders --> Users
+    Orders --> Payments
+    Fulfillment --> Orders
+    Notifications --> Orders
+    Notifications --> Fulfillment
+    Audit["AuditModule"] -.-> Auth
+    Audit -.-> Orders
+    Audit -.-> Vendors
+```
+
+### Module Details
+
+| Module                  | Responsibility                                                           | Key Endpoints                                                                      |
+| ----------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| **AuthModule**          | JWT issue/verify, login/register, password reset, refresh token rotation | `POST /auth/login`, `POST /auth/register`, `POST /auth/refresh`                    |
+| **UsersModule**         | User CRUD, role/membership management, profile                           | `GET /users/me`, `PATCH /users/me`, `GET /admin/users`                             |
+| **VendorsModule**       | Vendor onboarding, store settings, approval workflow                     | `POST /vendors/apply`, `POST /admin/vendors/:id/approve`, `PATCH /vendor/settings` |
+| **CatalogModule**       | Products CRUD, categories, attributes, ES sync                           | `POST /vendor/products`, `GET /catalog/products`, `GET /catalog/products/:slug`    |
+| **InventoryModule**     | Stock levels, reservations, low-stock alerts                             | `PATCH /vendor/inventory/:sku`, `GET /vendor/inventory`                            |
+| **OrdersModule**        | Cart, checkout (TX), order lifecycle, refunds                            | `POST /orders/checkout`, `GET /account/orders`, `GET /vendor/orders`               |
+| **PaymentsModule**      | Stripe Connect integration, payout tracking                              | `POST /payments/intent`, `POST /webhooks/stripe`                                   |
+| **FulfillmentModule**   | Shipments, carrier integration, tracking webhooks                        | `POST /fulfillment/ship`, `GET /tracking/:orderId`, `POST /webhooks/shipping`      |
+| **SearchModule**        | ES index management, query building                                      | `GET /search/products?q=...&facets=...`                                            |
+| **NotificationsModule** | Email (SES/Resend), SMS, in-app, push                                    | Internal event consumer only                                                       |
+| **AuditModule**         | Immutable audit trail for security-critical actions                      | Internal interceptor — no public endpoints                                         |
+| **HealthModule**        | Terminus health checks                                                   | `GET /health`                                                                      |
+
+### RBAC Model
+
+```typescript
+// roles: 'platform_admin' | 'vendor_owner' | 'vendor_staff' | 'customer'
+// Guard chain: JwtAuthGuard → RolesGuard → optional AbilityGuard (CASL)
+
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles('vendor_owner', 'vendor_staff')
+@Post('vendor/products')
+createProduct(@Body() dto: CreateProductDto, @CurrentUser() user: UserContext) {}
+```
+
+---
+
+## 5. MongoDB Collection Design
+
+### Entity-Relationship Overview
+
+```mermaid
+erDiagram
+    users ||--o{ memberships : "has many"
+    vendors ||--o{ memberships : "has many"
+    vendors ||--o{ products : "sells"
+    products ||--o{ inventory : "tracked by"
+    users ||--o{ orders : "places"
+    orders ||--o{ order_items : "contains (embedded)"
+    orders ||--o{ shipments : "fulfilled by"
+    vendors ||--o{ orders : "receives"
+    shipments ||--o{ tracking_events : "has (embedded)"
+```
+
+### Collection Schemas
+
+#### `users`
+
+```jsonc
+{
+  "_id": ObjectId,
+  "email": "customer@example.com",       // unique, indexed
+  "passwordHash": "...",
+  "role": "customer",                     // platform_admin | customer
+  "profile": {                            // EMBEDDED — always read together
+    "firstName": "Jane",
+    "lastName": "Doe",
+    "phone": "+1...",
+    "avatarUrl": "https://minio/..."
+  },
+  "addresses": [                          // EMBEDDED array (max 5)
+    { "label": "Home", "line1": "...", "city": "...", "zip": "...", "country": "US", "isDefault": true }
+  ],
+  "status": "active",                     // active | suspended | deleted
+  "createdAt": ISODate, "updatedAt": ISODate
+}
+// Indexes: { email: 1 } unique, { status: 1 }
+```
+
+#### `vendors`
+
+```jsonc
+{
+  "_id": ObjectId,
+  "name": "Acme Store",
+  "slug": "acme-store",                   // unique, indexed — used in URLs
+  "logo": "https://minio/...",
+  "status": "approved",                   // pending | approved | suspended
+  "businessInfo": {                       // EMBEDDED
+    "legalName": "...", "taxId": "...", "address": {...}
+  },
+  "stripeAccountId": "acct_...",
+  "commissionRate": 0.12,                 // 12% platform commission
+  "createdAt": ISODate, "updatedAt": ISODate
+}
+// Indexes: { slug: 1 } unique, { status: 1 }
+```
+
+#### `memberships` (User ↔ Vendor join)
+
+```jsonc
+{
+  "_id": ObjectId,
+  "userId": ObjectId,                     // REF → users
+  "vendorId": ObjectId,                   // REF → vendors
+  "role": "owner",                        // owner | manager | staff
+  "permissions": ["manage_products", "manage_orders", "manage_settings"],
+  "createdAt": ISODate
+}
+// Indexes: { userId: 1, vendorId: 1 } unique compound
+```
+
+#### `products`
+
+```jsonc
+{
+  "_id": ObjectId,
+  "vendorId": ObjectId,                   // REF → vendors
+  "title": "Wireless Headphones",
+  "slug": "wireless-headphones",
+  "description": "...",
+  "category": ["Electronics", "Audio"],   // Array for breadcrumb
+  "attributes": {                         // EMBEDDED — read with product
+    "brand": "Sony", "color": "Black", "weight": "250g"
+  },
+  "variants": [                           // EMBEDDED array
+    { "sku": "WH-BLK-M", "label": "Black / Medium", "priceInCents": 9999, "images": ["https://minio/..."] }
+  ],
+  "status": "published",                  // draft | published | archived
+  "rating": { "avg": 4.5, "count": 120 },// Denormalized, updated async
+  "createdAt": ISODate, "updatedAt": ISODate
+}
+// Indexes: { vendorId: 1, status: 1 }, { slug: 1 } unique, { "category": 1, status: 1 }
+```
+
+#### `inventory`
+
+```jsonc
+{
+  "_id": ObjectId,
+  "productId": ObjectId,                  // REF → products
+  "vendorId": ObjectId,                   // REF → vendors (denormalized for query)
+  "sku": "WH-BLK-M",
+  "quantityOnHand": 150,
+  "quantityReserved": 12,                 // Reserved during checkout, released on cancel/timeout
+  "lowStockThreshold": 10,
+  "warehouseLocation": "A3-R2-S5",
+  "updatedAt": ISODate
+}
+// Indexes: { sku: 1 } unique, { productId: 1 }, { vendorId: 1 }
+// WHY SEPARATE: Stock changes at very high frequency (every order). Separating avoids write contention on the product document.
+```
+
+#### `orders`
+
+```jsonc
+{
+  "_id": ObjectId,
+  "orderNumber": "MRZ-20260228-A7X3",    // Human-readable, unique
+  "customerId": ObjectId,                 // REF → users
+  "vendorId": ObjectId,                   // REF → vendors (one order per vendor after split)
+  "items": [                              // EMBEDDED — snapshot at purchase time
+    {
+      "productId": ObjectId,
+      "sku": "WH-BLK-M",
+      "title": "Wireless Headphones",     // Snapshot — won't change if product edited
+      "priceInCents": 9999,
+      "quantity": 2,
+      "imageUrl": "..."
+    }
+  ],
+  "shippingAddress": { ... },             // EMBEDDED snapshot
+  "subtotalInCents": 19998,
+  "shippingInCents": 499,
+  "taxInCents": 1800,
+  "totalInCents": 22297,
+  "platformCommissionInCents": 2675,
+  "status": "confirmed",                  // pending | confirmed | processing | shipped | delivered | cancelled | refunded
+  "paymentIntentId": "pi_...",
+  "createdAt": ISODate, "updatedAt": ISODate
+}
+// Indexes: { customerId: 1, createdAt: -1 }, { vendorId: 1, status: 1 }, { orderNumber: 1 } unique
+```
+
+#### `shipments`
+
+```jsonc
+{
+  "_id": ObjectId,
+  "orderId": ObjectId,                    // REF → orders
+  "vendorId": ObjectId,
+  "carrier": "fedex",
+  "trackingNumber": "794644790132",
+  "aggregatorShipmentId": "shp_...",      // Shippo/EasyPost ID
+  "status": "in_transit",                 // pre_transit | in_transit | out_for_delivery | delivered | failure
+  "estimatedDelivery": ISODate,
+  "timeline": [                           // EMBEDDED array — append-only
+    { "status": "label_created", "location": "New York, NY", "timestamp": ISODate, "description": "Shipping label created" },
+    { "status": "in_transit", "location": "Memphis, TN", "timestamp": ISODate, "description": "Package in transit" }
+  ],
+  "createdAt": ISODate, "updatedAt": ISODate
+}
+// Indexes: { orderId: 1 }, { trackingNumber: 1 }
+```
+
+#### `webhook_events`
+
+```jsonc
+{
+  "_id": ObjectId,
+  "source": "shippo",                     // shippo | stripe | ...
+  "externalId": "evt_abc123",             // Idempotency key
+  "eventType": "track_updated",
+  "payload": { ... },                     // Raw webhook body
+  "status": "processed",                  // pending | processed | failed
+  "attempts": 1,
+  "processedAt": ISODate,
+  "createdAt": ISODate
+}
+// Indexes: { source: 1, externalId: 1 } unique (idempotency), { status: 1 } (retry query)
+// TTL index: { createdAt: 1 }, expireAfterSeconds: 7776000 (90 days)
+```
+
+#### `outbox`
+
+```jsonc
+{
+  "_id": ObjectId,
+  "aggregateType": "order",
+  "aggregateId": ObjectId,
+  "eventType": "OrderCreated",
+  "payload": { ... },
+  "status": "pending",                    // pending | dispatched
+  "createdAt": ISODate
+}
+// Indexes: { status: 1, createdAt: 1 }
+// A poller or change stream dispatches pending events to BullMQ then marks them 'dispatched'.
+```
+
+### Embed vs Reference Decision Matrix
+
+| Decision          | Strategy                            | Rationale                                            |
+| ----------------- | ----------------------------------- | ---------------------------------------------------- |
+| User addresses    | **Embed** in `users`                | Always read together, bounded array (max 5)          |
+| Product variants  | **Embed** in `products`             | Part of the product concept, queried together        |
+| Order items       | **Embed** in `orders`               | Snapshot — must be immutable, always read with order |
+| Shipment timeline | **Embed** in `shipments`            | Append-only, always displayed together               |
+| Inventory         | **Reference** (separate collection) | High write frequency, avoids contention on products  |
+| Memberships       | **Reference** (separate collection) | Many-to-many join between users and vendors          |
+
+### Transactions Required
+
+**Checkout flow** (the only multi-document transaction):
+
+1. Decrement `inventory.quantityOnHand`, increment `quantityReserved`
+2. Insert `orders` document
+3. Insert `outbox` event (`OrderCreated`)
+
+All three within a single MongoDB session/transaction. If any step fails, the entire transaction rolls back.
+
+---
+
+## 6. Search Indexing Plan
+
+### What Gets Indexed
+
+Only `products` are indexed in Elasticsearch. Orders, users, and vendors stay in MongoDB with proper indexes.
+
+### ES Mapping (Key Fields)
+
+```jsonc
+{
+  "mappings": {
+    "properties": {
+      "productId": { "type": "keyword" },
+      "vendorId": { "type": "keyword" },
+      "vendorName": { "type": "keyword" },
+      "title": {
+        "type": "text",
+        "analyzer": "autocomplete",
+        "search_analyzer": "standard",
+      },
+      "description": { "type": "text" },
+      "category": { "type": "keyword" },
+      "brand": { "type": "keyword" },
+      "priceInCents": { "type": "integer" },
+      "rating": { "type": "float" },
+      "inStock": { "type": "boolean" },
+      "slug": { "type": "keyword" },
+      "createdAt": { "type": "date" },
+    },
+  },
+  "settings": {
+    "analysis": {
+      "analyzer": {
+        "autocomplete": {
+          "type": "custom",
+          "tokenizer": "autocomplete_tokenizer",
+          "filter": ["lowercase"],
+        },
+      },
+      "tokenizer": {
+        "autocomplete_tokenizer": {
+          "type": "edge_ngram",
+          "min_gram": 2,
+          "max_gram": 15,
+          "token_chars": ["letter", "digit"],
+        },
+      },
+    },
+  },
+}
+```
+
+### Update Propagation (Outbox → BullMQ → ES)
+
+1. CatalogModule updates product in MongoDB **+ inserts outbox event** (same transaction).
+2. Outbox poller (CronJob, every 5s) picks up pending events → enqueues BullMQ `SearchIndex` job → marks event `dispatched`.
+3. Worker aggregates product + vendor name + stock status → **bulk upserts** to ES (batches of 50).
+4. Full reindex via CLI: `pnpm reindex:products` (creates new index, bulk inserts, swaps alias, deletes old).
+
+**Why Outbox over Change Streams:** Simpler to reason about, participates in the same transaction, survives application restarts without resume-token management.
+
+### Caching Strategy (Complete)
+
+**1) Next.js fetch caching:**
+
+| Page           | Strategy | TTL     | Invalidation                                        |
+| -------------- | -------- | ------- | --------------------------------------------------- |
+| Homepage       | ISR      | 60s     | `revalidateTag('homepage')`                         |
+| PDP            | ISR      | 300s    | `revalidateTag('product-{slug}')` on product update |
+| Search results | No cache | Dynamic | User-specific query params                          |
+| Category pages | ISR      | 120s    | Tag-based                                           |
+
+**2) NestJS caching (Redis/Keyv + in-memory LRU):**
+
+| Data                              | Layer                   | TTL   | Invalidation                            |
+| --------------------------------- | ----------------------- | ----- | --------------------------------------- |
+| Platform config, role definitions | In-memory LRU (50 keys) | 5min  | TTL / restart                           |
+| Product detail (by slug)          | Redis Keyv              | 10min | Event-driven delete on `ProductUpdated` |
+| Vendor profile                    | Redis Keyv              | 15min | Event-driven                            |
+| Dashboard aggregations            | Redis Keyv              | 2min  | TTL only                                |
+
+**3) Why NOT cache Elasticsearch in memory:**
+
+- ES already uses OS filesystem cache (mmap) — warm queries are sub-10ms.
+- Faceted search has combinatorial explosion of filter combos → cache hit rate is extremely low.
+- Cached results go stale on every product update → consistency nightmare.
+- **Exception:** Cache top ~50 most popular bare search terms in Redis with 5-min TTL (high hit rate, low staleness cost).
+
+---
+
+## 7. Delivery Tracking Integration Plan
+
+**Decision: Use a Shipping Aggregator** (Shippo / EasyPost) — unified API for 50+ carriers, single webhook format, label generation. Engineering time saved far outweighs per-label cost.
+
+### Flow
+
+1. Vendor triggers "Ship Order" → NestJS calls Shippo API → gets `label_url`, `tracking_number`, `shipment_id`.
+2. NestJS stores `shipments` doc, updates order status to `shipped`.
+3. Carrier scans package → Shippo fires webhook → `POST /webhooks/shipping`.
+4. NestJS verifies HMAC signature → checks `webhook_events` for idempotency → upserts `shipments.timeline` → enqueues notification job.
+5. Customer sees live updates via SSE (`useTrackingSSE` hook → NestJS SSE endpoint).
+
+### Webhook Verification & Idempotency
+
+```typescript
+@Post('webhooks/shipping')
+async handle(@Req() req: RawBodyRequest<Request>) {
+  // 1. Verify HMAC signature
+  if (!verifyHmac(req.rawBody, req.headers['x-shippo-signature'], secret))
+    throw new ForbiddenException('Invalid signature');
+  // 2. Idempotency: skip if event already processed
+  const exists = await this.webhookEvents.findByExternalId('shippo', req.body.event_id);
+  if (exists) return { status: 'already_processed' };
+  // 3. Process + record
+  await this.webhookEvents.create({ source: 'shippo', externalId: req.body.event_id, ... });
+  await this.fulfillment.processTrackingUpdate(req.body);
+}
+```
+
+### Retry Policy
+
+- Aggregator retries webhook delivery with exponential backoff (1min → 5min → 30min → 2hr).
+- If NestJS processing fails after acceptance, BullMQ job retries 3× with backoff. Dead-letter jobs surface in admin dashboard.
+
+### Timeline UI Model
+
+```typescript
+interface TrackingEvent {
+  status:
+    | "label_created"
+    | "picked_up"
+    | "in_transit"
+    | "out_for_delivery"
+    | "delivered"
+    | "exception";
+  location: string;
+  timestamp: Date;
+  description: string;
+}
+// <OrderTimeline events={shipment.timeline} estimatedDelivery={shipment.estimatedDelivery} />
+// Vertical stepper: green=completed, blue=current, gray=pending
+```
+
+---
+
+## 8. Docker Compose & Production Deployment
+
+### Local Development (`docker-compose.yml`)
+
+```yaml
+version: "3.9"
+services:
+  mongodb:
+    image: mongo:latest
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports: ["27017:27017"]
+    volumes: [mongo_data:/data/db]
+    healthcheck:
+      test: >
+        echo 'try { rs.status() } catch(e) { rs.initiate({_id:"rs0",members:[{_id:0,host:"mongodb:27017"}]}) }' | mongosh --quiet
+      interval: 10s
+      start_period: 30s
+
+  redis:
+    image: redis:latest
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+
+  elasticsearch:
+    image: elasticsearch:latest
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports: ["9200:9200"]
+    volumes: [es_data:/usr/share/elasticsearch/data]
+    healthcheck:
+      test: curl -s http://localhost:9200/_cluster/health | grep -q '"status":"green\|yellow"'
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports: ["9000:9000", "9001:9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes: [minio_data:/data]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio: { condition: service_healthy }
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb --ignore-existing local/product-images;
+      mc mb --ignore-existing local/vendor-logos;
+      mc mb --ignore-existing local/invoices;
+      mc anonymous set download local/product-images;"
+
+  stripe-cli:
+    image: stripe/stripe-cli:latest
+    command: listen --forward-to http://host.docker.internal:3001/api/v1/webhooks/stripe --api-key $${STRIPE_SECRET_KEY}
+    environment:
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-sk_test_placeholder}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis
+
+volumes:
+  mongo_data:
+  es_data:
+  minio_data:
+```
+
+> [!NOTE]
+> Next.js and NestJS run locally via `pnpm dev` for fast HMR — not containerized during development. The `stripe-cli` container forwards Stripe webhook events to your local NestJS server for testing payment flows end-to-end.
+
+### Production Notes
+
+| Concern               | Solution                                                       |
+| --------------------- | -------------------------------------------------------------- |
+| **Orchestration**     | Kubernetes (EKS/GKE) or ECS Fargate                            |
+| **MongoDB**           | Atlas (managed replica set, automated backups, PITR)           |
+| **Redis**             | ElastiCache or Redis Cloud                                     |
+| **Elasticsearch**     | Elastic Cloud or OpenSearch                                    |
+| **MinIO → S3**        | Swap endpoint — same SDK                                       |
+| **Secrets**           | AWS Secrets Manager / Vault → injected as env vars             |
+| **SSL**               | Terminate at ALB/Ingress with ACM or Let's Encrypt             |
+| **CI/CD**             | GitHub Actions → Docker build → ECR → Helm/ArgoCD              |
+| **Backups**           | Atlas daily snapshots; S3 versioning + lifecycle; Redis AOF    |
+| **Graceful shutdown** | `enableShutdownHooks()` — drain HTTP, close BullMQ, flush logs |
+
+---
+
+## 9. Security Checklist (OWASP + NestJS)
+
+### OWASP Top 10 Coverage
+
+| OWASP Category                    | Mitigation                                                                                                                                                            |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A01 Broken Access Control**     | RBAC guards on every route (`@Roles()`), CASL ability checks for resource ownership, tenant isolation (vendor can only see own data)                                  |
+| **A02 Cryptographic Failures**    | Bcrypt (cost 12) for passwords, TLS everywhere, `HttpOnly + Secure + SameSite=Lax` cookies, no secrets in client bundles                                              |
+| **A03 Injection**                 | `ValidationPipe({ whitelist: true, forbidNonWhitelisted: true })` strips unknown fields, Mongoose schemas enforce types, no `$where` or raw query objects from client |
+| **A04 Insecure Design**           | Multi-document transactions for checkout, outbox pattern for reliable events, presigned URLs (no direct upload to server)                                             |
+| **A05 Security Misconfiguration** | `helmet()` middleware (HSTS, X-Content-Type-Options, X-Frame-Options), strict CORS origins, disable X-Powered-By                                                      |
+| **A06 Vulnerable Components**     | `npm audit` in CI, Dependabot/Renovate for auto-updates, lock file committed                                                                                          |
+| **A07 Auth Failures**             | Rate limiting on `/auth/login` (5 attempts/min per IP via `@nestjs/throttler` + Redis), JWT refresh token rotation, short-lived access tokens (15min)                 |
+| **A08 Data Integrity**            | Webhook signature verification (HMAC), idempotency keys in `webhook_events`, Stripe webhook signature check                                                           |
+| **A09 Logging Failures**          | Audit log for auth events, role changes, payout modifications — written to append-only collection with TTL index                                                      |
+| **A10 SSRF**                      | No user-controlled URLs passed to server-side fetch; MinIO endpoint is hardcoded in config                                                                            |
+
+### NestJS-Specific Protections
+
+```typescript
+// main.ts
+app.use(helmet());
+app.enableCors({ origin: [process.env.FRONTEND_URL], credentials: true });
+app.useGlobalPipes(
+  new ValidationPipe({
+    whitelist: true,
+    forbidNonWhitelisted: true,
+    transform: true,
+  }),
+);
+app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector))); // Strip @Exclude() fields
+```
+
+### Additional Measures
+
+- **File upload validation:** Presigned URL generation checks MIME type + max file size (5MB images, 20MB invoices). NestJS never touches the file bytes.
+- **Rate limiting tiers:** Global (100 req/min), Auth endpoints (5/min), Checkout (10/min), Webhook (1000/min).
+- **CSP headers:** Strict Content-Security-Policy via Helmet — `script-src 'self'`, no inline scripts.
+- **Audit trail:** `AuditInterceptor` logs `{ action, userId, resource, resourceId, ip, timestamp }` for: login, role change, vendor approval, payout config change, product publish/unpublish.
+
+---
+
+## 10. Observability Plan
+
+### Structured Logging
+
+**Library:** `nestjs-pino` (Pino JSON logger — high performance, structured output).
+
+```typescript
+// Every log line includes:
+{
+  "level": "info",
+  "time": 1709136188000,
+  "traceId": "abc123...",
+  "spanId": "def456...",
+  "userId": "user_789",
+  "vendorId": "vendor_012",    // null for non-vendor requests
+  "method": "POST",
+  "url": "/api/v1/orders/checkout",
+  "statusCode": 201,
+  "responseTime": 342,
+  "msg": "Order created successfully"
+}
+```
+
+**Log levels:**
+
+- `error` — unhandled exceptions, transaction failures, external service errors
+- `warn` — retry attempts, rate limit hits, validation failures
+- `info` — request/response lifecycle, business events (order created, shipment updated)
+- `debug` — cache hit/miss, query timing (disabled in production)
+
+### Metrics (Prometheus)
+
+Expose `/metrics` endpoint via `@willsoto/nestjs-prometheus`.
+
+| Metric                          | Type      | Labels                | Purpose                     |
+| ------------------------------- | --------- | --------------------- | --------------------------- |
+| `http_request_duration_seconds` | Histogram | method, route, status | API latency SLOs            |
+| `http_requests_total`           | Counter   | method, route, status | Traffic volume, error rates |
+| `orders_created_total`          | Counter   | vendor_id             | Business metric             |
+| `checkout_duration_seconds`     | Histogram | —                     | Checkout performance        |
+| `bullmq_queue_depth`            | Gauge     | queue_name            | Queue backlog               |
+| `bullmq_job_failed_total`       | Counter   | queue_name            | Worker failures             |
+| `mongodb_connection_pool_size`  | Gauge     | —                     | Connection health           |
+| `es_index_lag_seconds`          | Gauge     | —                     | Search freshness            |
+| `cache_hit_ratio`               | Gauge     | cache_name            | Cache effectiveness         |
+
+### Distributed Tracing (OpenTelemetry)
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant NX as Next.js
+    participant NS as NestJS
+    participant DB as MongoDB
+    participant ES as Elasticsearch
+
+    B->>NX: GET /products/wireless-headphones
+    Note over NX: Create trace, span: "next.server-component"
+    NX->>NS: GET /api/v1/catalog/products/wireless-headphones (traceparent header)
+    Note over NS: Child span: "nest.handler"
+    NS->>DB: findOne({slug: "wireless-headphones"})
+    Note over NS: Child span: "mongodb.query"
+    NS-->>NX: 200 OK (product JSON)
+    NX-->>B: Rendered HTML
+```
+
+**Setup:** `@opentelemetry/sdk-node` + `@opentelemetry/auto-instrumentations-node` in both Next.js and NestJS. Export traces to Jaeger (dev) or Grafana Tempo / Datadog (production).
+
+**`traceparent` propagation:** Next.js `apiFetch` wrapper injects `traceparent` header on every call to NestJS. NestJS `OtelMiddleware` extracts and continues the trace.
+
+### Alerting Thresholds
+
+| Alert                         | Condition                     | Severity    | Action                     |
+| ----------------------------- | ----------------------------- | ----------- | -------------------------- |
+| High API error rate           | >1% 5xx responses over 5min   | 🔴 Critical | Page on-call               |
+| Checkout latency              | P95 > 2 seconds over 5min     | 🔴 Critical | Investigate DB/payment     |
+| BullMQ dead-letter queue      | Any job in DLQ                | 🟡 Warning  | Investigate + manual retry |
+| Queue depth spike             | Any queue > 1000 pending jobs | 🟡 Warning  | Scale workers              |
+| MongoDB connection exhaustion | Pool usage > 80%              | 🟡 Warning  | Increase pool size         |
+| ES index lag                  | > 60 seconds behind           | 🟡 Warning  | Check outbox poller        |
+| Redis memory                  | > 80% max memory              | 🟡 Warning  | Eviction policy review     |
+| Disk space (MinIO/S3)         | > 85% capacity                | 🟡 Warning  | Lifecycle cleanup          |
+
+### Per-Component Monitoring Summary
+
+| Component          | What to Watch                                                                    |
+| ------------------ | -------------------------------------------------------------------------------- |
+| **Next.js**        | Core Web Vitals (LCP, FID, CLS), ISR cache hit rate, Server Action error rate    |
+| **NestJS**         | HTTP latency, error rate, active connections, memory/CPU                         |
+| **MongoDB**        | Query slow log (>100ms), connection pool, replication lag, oplog window          |
+| **Redis**          | Memory usage, evicted keys, connected clients, BullMQ queue depth                |
+| **Elasticsearch**  | Search latency, indexing rate, JVM heap, unassigned shards                       |
+| **MinIO/S3**       | Request rate, 4xx errors, storage usage                                          |
+| **Stripe**         | Webhook delivery success rate, payment intent failure rate, dispute rate, latency |
+| **BullMQ Workers** | Job completion rate, failure rate, processing time, DLQ size                     |
+
+---
+
+_Assumptions made:_
+
+1. _Scale targets hundreds–thousands of vendors, not millions (modular monolith, not day-1 microservices)._
+2. _Production MongoDB runs as a managed Atlas Replica Set._
+3. _Payment processing via Stripe Connect; shipping via Shippo/EasyPost._
+4. _Single geographic region initially; CDN in front of Next.js._
+5. _Zod used for validation schema sharing (better TypeScript inference)._
+6. _Package manager: **pnpm** throughout (frontend + backend)._
+7. _All Docker images use `:latest` tags for local development; production pins to specific versions._
