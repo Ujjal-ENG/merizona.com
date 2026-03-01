@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -152,6 +153,8 @@ export class OrdersService {
     vendorId: string,
     query: OrdersQueryDto,
   ): Promise<PaginatedResponse<OrderDocument>> {
+    await this.assertVendorCanOperate(vendorId);
+
     return this.paginate(
       this.orderRepository
         .createQueryBuilder("order")
@@ -171,6 +174,8 @@ export class OrdersService {
     vendorId: string,
     status: OrderStatus,
   ): Promise<OrderDocument> {
+    await this.assertVendorCanOperate(vendorId);
+
     const order = await this.orderRepository.findOne({
       where: { _id: orderId, vendorId },
     });
@@ -254,5 +259,24 @@ export class OrdersService {
     }
 
     throw new BadRequestException("Unable to generate a unique order number");
+  }
+
+  private async assertVendorCanOperate(vendorId: string): Promise<void> {
+    const vendor = await this.vendorRepository.findOne({ where: { _id: vendorId } });
+    if (!vendor) {
+      throw new NotFoundException("Vendor not found");
+    }
+
+    if (vendor.status !== "approved") {
+      throw new ForbiddenException(
+        "Vendor must be approved by admin before managing orders",
+      );
+    }
+
+    if (vendor.packageStatus !== "active") {
+      throw new ForbiddenException(
+        "Vendor package must be active before running the business",
+      );
+    }
   }
 }
