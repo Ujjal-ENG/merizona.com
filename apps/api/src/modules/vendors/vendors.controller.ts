@@ -1,0 +1,55 @@
+import {
+  Body,
+  Controller,
+  ForbiddenException,
+  Get,
+  Patch,
+  Post,
+  UseGuards,
+} from "@nestjs/common";
+import { CheckAbility, CurrentUser } from "../../common/decorators";
+import { UserContext } from "../../common/interfaces";
+import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
+import { AbilityGuard } from "../casl/ability.guard";
+import { ApplyVendorDto } from "./dto/apply-vendor.dto";
+import { UpdateVendorDto } from "./dto/update-vendor.dto";
+import { VendorsService } from "./vendors.service";
+
+@Controller("vendor")
+@UseGuards(JwtAuthGuard, AbilityGuard)
+export class VendorsController {
+  constructor(private readonly vendorsService: VendorsService) {}
+
+  @Post("apply")
+  async apply(@CurrentUser() user: UserContext, @Body() dto: ApplyVendorDto) {
+    return this.vendorsService.apply(user._id, dto);
+  }
+
+  @Get("profile")
+  @CheckAbility({ action: "read", subject: "Vendor" })
+  async getProfile(@CurrentUser() user: UserContext) {
+    if (!user.vendorId) {
+      throw new ForbiddenException("Vendor membership is required");
+    }
+    return this.vendorsService.findByIdOrFail(user.vendorId);
+  }
+
+  @Get("stats")
+  async getStats(@CurrentUser() user: UserContext) {
+    if (!user.vendorId) {
+      throw new ForbiddenException("Vendor membership is required");
+    }
+
+    await this.vendorsService.assertVendorCanOperate(user.vendorId);
+    return this.vendorsService.getStats(user.vendorId);
+  }
+
+  @Patch("settings")
+  @CheckAbility({ action: "update", subject: "Vendor" })
+  async updateSettings(
+    @CurrentUser() user: UserContext,
+    @Body() dto: UpdateVendorDto,
+  ) {
+    return this.vendorsService.update(user.vendorId!, dto);
+  }
+}
