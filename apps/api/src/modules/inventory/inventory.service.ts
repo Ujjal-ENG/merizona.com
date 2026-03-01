@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -9,6 +10,7 @@ import { Repository } from "typeorm";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { PaginatedResponse } from "../../common/interfaces";
 import { Product } from "../catalog/schemas/product.schema";
+import { Vendor } from "../vendors/schemas/vendor.schema";
 import { Inventory, InventoryDocument } from "./schemas/inventory.schema";
 
 @Injectable()
@@ -18,12 +20,16 @@ export class InventoryService {
   constructor(
     @InjectRepository(Inventory)
     private readonly inventoryRepository: Repository<Inventory>,
+    @InjectRepository(Vendor)
+    private readonly vendorRepository: Repository<Vendor>,
   ) {}
 
   async findByVendor(
     vendorId: string,
     query: PaginationDto & { lowStock?: boolean },
   ): Promise<PaginatedResponse<InventoryDocument>> {
+    await this.assertVendorCanOperate(vendorId);
+
     const { page = 1, limit = 20, sort = "updatedAt", order = "desc" } = query;
 
     const sortField = this.pickSortField(sort, [
@@ -67,6 +73,8 @@ export class InventoryService {
       warehouseLocation?: string;
     },
   ): Promise<InventoryDocument> {
+    await this.assertVendorCanOperate(vendorId);
+
     const inventory = await this.inventoryRepository.findOne({
       where: { sku, vendorId },
     });
@@ -138,5 +146,24 @@ export class InventoryService {
         slug: product.slug,
       } as any,
     };
+  }
+
+  private async assertVendorCanOperate(vendorId: string): Promise<void> {
+    const vendor = await this.vendorRepository.findOne({ where: { _id: vendorId } });
+    if (!vendor) {
+      throw new NotFoundException("Vendor not found");
+    }
+
+    if (vendor.status !== "approved") {
+      throw new ForbiddenException(
+        "Vendor must be approved by admin before running inventory operations",
+      );
+    }
+
+    if (vendor.packageStatus !== "active") {
+      throw new ForbiddenException(
+        "Vendor package must be active before running the business",
+      );
+    }
   }
 }
