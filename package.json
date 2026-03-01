@@ -1,0 +1,26 @@
+{
+  "name": "merizona",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-vendor ecommerce marketplace",
+  "scripts": {
+    "dev:api": "pnpm --filter @merizona/api dev",
+    "dev:web": "pnpm --filter @merizona/web dev",
+    "dev": "pnpm -r --parallel --stream dev",
+    "build:api": "pnpm --filter @merizona/api build",
+    "build:web": "pnpm --filter @merizona/web build",
+    "build": "pnpm -r --parallel --stream build",
+    "lint": "pnpm -r --parallel --stream lint",
+    "lint:api": "pnpm --filter @merizona/api lint",
+    "lint:web": "pnpm --filter @merizona/web lint",
+    "seed": "pnpm --filter @merizona/api seed",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@9.15.0"
+}
