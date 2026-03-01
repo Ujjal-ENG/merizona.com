@@ -38,6 +38,15 @@ export class CatalogVendorController {
     return this.catalogService.findByVendor(user.vendorId!, query);
   }
 
+  @Get(":id")
+  @CheckAbility({ action: "read", subject: "Product" })
+  async findOne(
+    @CurrentUser() user: UserContext,
+    @Param("id") id: string,
+  ) {
+    return this.catalogService.findOneByVendor(id, user.vendorId!);
+  }
+
   @Post()
   @CheckAbility({ action: "create", subject: "Product" })
   async create(
