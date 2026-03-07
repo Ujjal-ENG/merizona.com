@@ -12,6 +12,7 @@ import { InventoryModule } from "./modules/inventory/inventory.module";
 import { OrdersModule } from "./modules/orders/orders.module";
 import { UsersModule } from "./modules/users/users.module";
 import { VendorsModule } from "./modules/vendors/vendors.module";
+import { WebhooksModule } from "./modules/webhooks/webhooks.module";
 
 @Module({
   imports: [
@@ -49,6 +50,7 @@ import { VendorsModule } from "./modules/vendors/vendors.module";
     CatalogModule,
     InventoryModule,
     OrdersModule,
+    WebhooksModule,
   ],
   providers: [
     // Apply throttle guard globally
