@@ -8,6 +8,7 @@ import { Membership } from "./schemas/membership.schema";
 import { Vendor } from "./schemas/vendor.schema";
 import { VendorsAdminController } from "./vendors-admin.controller";
 import { VendorsController } from "./vendors.controller";
+import { VendorsPublicController } from "./vendors-public.controller";
 import { VendorsService } from "./vendors.service";
 
 @Module({
@@ -15,7 +16,7 @@ import { VendorsService } from "./vendors.service";
     TypeOrmModule.forFeature([Vendor, Membership, Product, Order, Inventory]),
     CaslModule,
   ],
-  controllers: [VendorsController, VendorsAdminController],
+  controllers: [VendorsController, VendorsAdminController, VendorsPublicController],
   providers: [VendorsService],
   exports: [VendorsService],
 })
