@@ -1,7 +1,7 @@
 import { Controller, Get, Param, Query } from "@nestjs/common";
 import { Public } from "../../common/decorators";
-import { PaginationDto } from "../../common/dto/pagination.dto";
 import { CatalogService } from "./catalog.service";
+import { CatalogQueryDto } from "./dto/catalog-query.dto";
 
 /**
  * Public catalog endpoints — storefront facing.
@@ -13,9 +13,7 @@ export class CatalogController {
 
   @Get("products")
   @Public()
-  async findAll(
-    @Query() query: PaginationDto & { category?: string; search?: string },
-  ) {
+  async findAll(@Query() query: CatalogQueryDto) {
     return this.catalogService.findPublished(query);
   }
 
