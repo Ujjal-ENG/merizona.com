@@ -12,6 +12,7 @@ import { PaginationDto } from "../../common/dto/pagination.dto";
 import { PaginatedResponse } from "../../common/interfaces";
 import { Inventory } from "../inventory/schemas/inventory.schema";
 import { Vendor } from "../vendors/schemas/vendor.schema";
+import { CatalogQueryDto } from "./dto/catalog-query.dto";
 import { CreateProductDto } from "./dto/create-product.dto";
 import { UpdateProductDto } from "./dto/update-product.dto";
 import { Product, ProductDocument } from "./schemas/product.schema";
@@ -108,7 +109,7 @@ export class CatalogService {
    * Public catalog query — only published products.
    */
   async findPublished(
-    query: PaginationDto & { category?: string; search?: string },
+    query: CatalogQueryDto,
   ): Promise<PaginatedResponse<ProductDocument>> {
     const {
       page = 1,
@@ -117,22 +118,38 @@ export class CatalogService {
       order = "desc",
       category,
       search,
+      vendorSlug,
+      minPriceInCents,
+      maxPriceInCents,
     } = query;
 
-    const sortField = this.pickSortField(sort, [
-      "createdAt",
-      "updatedAt",
-      "title",
-      "status",
-    ]);
+    if (
+      minPriceInCents !== undefined &&
+      maxPriceInCents !== undefined &&
+      minPriceInCents > maxPriceInCents
+    ) {
+      throw new BadRequestException(
+        "minPriceInCents cannot be greater than maxPriceInCents",
+      );
+    }
 
     const qb = this.productRepository
       .createQueryBuilder("product")
       .leftJoinAndSelect("product.vendor", "vendor")
-      .where("product.status = :status", { status: "published" });
+      .where("product.status = :status", { status: "published" })
+      .andWhere("vendor.status = :vendorStatus", { vendorStatus: "approved" })
+      .andWhere("vendor.packageStatus = :packageStatus", {
+        packageStatus: "active",
+      });
 
     if (category) {
       qb.andWhere(":category = ANY(product.category)", { category });
+    }
+
+    if (vendorSlug) {
+      qb.andWhere("vendor.slug = :vendorSlug", {
+        vendorSlug: vendorSlug.toLowerCase().trim(),
+      });
     }
 
     if (search) {
@@ -150,7 +167,31 @@ export class CatalogService {
       );
     }
 
-    qb.orderBy(`product.${sortField}`, order === "asc" ? "ASC" : "DESC")
+    if (minPriceInCents !== undefined) {
+      qb.andWhere(
+        `EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(product.variants) AS variant
+          WHERE (variant->>'priceInCents')::int >= :minPriceInCents
+        )`,
+        { minPriceInCents },
+      );
+    }
+
+    if (maxPriceInCents !== undefined) {
+      qb.andWhere(
+        `EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(product.variants) AS variant
+          WHERE (variant->>'priceInCents')::int <= :maxPriceInCents
+        )`,
+        { maxPriceInCents },
+      );
+    }
+
+    const sortExpression = this.resolvePublicSortExpression(sort);
+
+    qb.orderBy(sortExpression, order === "asc" ? "ASC" : "DESC", "NULLS LAST")
       .skip((page - 1) * limit)
       .take(limit);
 
@@ -168,6 +209,10 @@ export class CatalogService {
       .leftJoinAndSelect("product.vendor", "vendor")
       .where("product.slug = :slug", { slug })
       .andWhere("product.status = :status", { status: "published" })
+      .andWhere("vendor.status = :vendorStatus", { vendorStatus: "approved" })
+      .andWhere("vendor.packageStatus = :packageStatus", {
+        packageStatus: "active",
+      })
       .getOne();
 
     if (!product) {
@@ -382,6 +427,33 @@ export class CatalogService {
     return allowed.includes(sort) ? sort : "createdAt";
   }
 
+  private resolvePublicSortExpression(sort?: string): string {
+    const minVariantPriceExpression = this.minVariantPriceExpression();
+
+    switch (sort) {
+      case "price":
+        return minVariantPriceExpression;
+      case "rating":
+        return "(product.rating->>'avg')::numeric";
+      case "reviewCount":
+        return "(product.rating->>'count')::int";
+      case "updatedAt":
+        return "product.updatedAt";
+      case "title":
+        return "product.title";
+      case "createdAt":
+      default:
+        return "product.createdAt";
+    }
+  }
+
+  private minVariantPriceExpression(): string {
+    return `(
+      SELECT MIN((variant->>'priceInCents')::int)
+      FROM jsonb_array_elements(product.variants) AS variant
+    )`;
+  }
+
   private pickStatus(status?: string): Product["status"] | undefined {
     if (!status) {
       return undefined;
@@ -549,7 +621,7 @@ export class CatalogService {
 
   private withVendorSummary(
     product: Product & { vendor?: Vendor },
-  ): Product & { vendorName?: string } {
+  ): Product & { vendorName?: string; vendorSlug?: string } {
     if (!product.vendor) {
       return product;
     }
@@ -559,6 +631,7 @@ export class CatalogService {
     return {
       ...rest,
       vendorName: vendor.name,
+      vendorSlug: vendor.slug,
     };
   }
 
