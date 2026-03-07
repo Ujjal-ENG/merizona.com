@@ -38,4 +38,18 @@ export class VendorsAdminController {
   async suspend(@Param("id") id: string) {
     return this.vendorsService.suspend(id);
   }
+
+  @Post(":id/package/activate")
+  @CheckAbility({ action: "manage", subject: "Vendor" })
+  @HttpCode(HttpStatus.OK)
+  async activatePackage(@Param("id") id: string) {
+    return this.vendorsService.activatePackage(id);
+  }
+
+  @Post(":id/package/deactivate")
+  @CheckAbility({ action: "manage", subject: "Vendor" })
+  @HttpCode(HttpStatus.OK)
+  async deactivatePackage(@Param("id") id: string) {
+    return this.vendorsService.deactivatePackage(id);
+  }
 }
