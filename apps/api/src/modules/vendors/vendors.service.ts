@@ -14,9 +14,27 @@ import { Product } from "../catalog/schemas/product.schema";
 import { Inventory } from "../inventory/schemas/inventory.schema";
 import { Order } from "../orders/schemas/order.schema";
 import { ApplyVendorDto } from "./dto/apply-vendor.dto";
+import { PublicVendorsQueryDto } from "./dto/public-vendors-query.dto";
 import { UpdateVendorDto } from "./dto/update-vendor.dto";
 import { Membership, MembershipDocument } from "./schemas/membership.schema";
 import { Vendor, VendorDocument } from "./schemas/vendor.schema";
+
+export interface PublicVendorView {
+  _id: string;
+  name: string;
+  slug: string;
+  description?: string;
+  logo?: string;
+  status: Vendor["status"];
+  businessInfo?: Vendor["businessInfo"];
+  createdAt: Date;
+  updatedAt: Date;
+  stats: {
+    productCount: number;
+    reviewCount: number;
+    avgRating: number;
+  };
+}
 
 @Injectable()
 export class VendorsService {
@@ -110,6 +128,75 @@ export class VendorsService {
     return vendor;
   }
 
+  async findPublicVendors(
+    query: PublicVendorsQueryDto,
+  ): Promise<PaginatedResponse<PublicVendorView>> {
+    const {
+      page = 1,
+      limit = 20,
+      sort = "createdAt",
+      order = "desc",
+      search,
+    } = query;
+
+    const sortField = this.pickSortField(sort, ["createdAt", "updatedAt", "name"]);
+
+    const qb = this.vendorRepository
+      .createQueryBuilder("vendor")
+      .where("vendor.status = :status", { status: "approved" })
+      .andWhere("vendor.packageStatus = :packageStatus", {
+        packageStatus: "active",
+      });
+
+    if (search) {
+      qb.andWhere(
+        `(
+          vendor.name ILIKE :search
+          OR COALESCE(vendor.description, '') ILIKE :search
+          OR COALESCE(vendor."businessInfo"->>'city', '') ILIKE :search
+          OR COALESCE(vendor."businessInfo"->>'country', '') ILIKE :search
+        )`,
+        { search: `%${search}%` },
+      );
+    }
+
+    qb.orderBy(`vendor.${sortField}`, order === "asc" ? "ASC" : "DESC")
+      .skip((page - 1) * limit)
+      .take(limit);
+
+    const [vendors, total] = await qb.getManyAndCount();
+    const data = await this.buildPublicVendorViews(vendors);
+
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  async findPublicVendorBySlug(slug: string): Promise<PublicVendorView> {
+    const normalizedSlug = slug.toLowerCase().trim();
+    const vendor = await this.vendorRepository
+      .createQueryBuilder("vendor")
+      .where("vendor.slug = :slug", { slug: normalizedSlug })
+      .andWhere("vendor.status = :status", { status: "approved" })
+      .andWhere("vendor.packageStatus = :packageStatus", {
+        packageStatus: "active",
+      })
+      .getOne();
+
+    if (!vendor) {
+      throw new NotFoundException("Vendor not found");
+    }
+
+    const [view] = await this.buildPublicVendorViews([vendor]);
+    return view;
+  }
+
   async findAll(
     query: PaginationDto & { status?: string },
   ): Promise<PaginatedResponse<VendorDocument>> {
@@ -174,6 +261,30 @@ export class VendorsService {
     await this.vendorRepository.save(vendor);
 
     this.logger.log(`Vendor suspended: ${vendor.name} (${vendor._id})`);
+    return vendor;
+  }
+
+  async activatePackage(vendorId: string): Promise<VendorDocument> {
+    const vendor = await this.findByIdOrFail(vendorId);
+    if (vendor.packageStatus === "active") {
+      return vendor;
+    }
+
+    vendor.packageStatus = "active";
+    await this.vendorRepository.save(vendor);
+    this.logger.log(`Vendor package activated: ${vendor.name} (${vendor._id})`);
+    return vendor;
+  }
+
+  async deactivatePackage(vendorId: string): Promise<VendorDocument> {
+    const vendor = await this.findByIdOrFail(vendorId);
+    if (vendor.packageStatus === "inactive") {
+      return vendor;
+    }
+
+    vendor.packageStatus = "inactive";
+    await this.vendorRepository.save(vendor);
+    this.logger.log(`Vendor package deactivated: ${vendor.name} (${vendor._id})`);
     return vendor;
   }
 
@@ -267,6 +378,81 @@ export class VendorsService {
       revenue,
       lowStockItems,
     };
+  }
+
+  private async buildPublicVendorViews(
+    vendors: VendorDocument[],
+  ): Promise<PublicVendorView[]> {
+    const vendorIds = vendors.map((vendor) => vendor._id);
+    const statsByVendorId = await this.getVendorMarketplaceStats(vendorIds);
+
+    return vendors.map((vendor) => {
+      const stats = statsByVendorId.get(vendor._id) ?? {
+        productCount: 0,
+        reviewCount: 0,
+        avgRating: 0,
+      };
+
+      return {
+        _id: vendor._id,
+        name: vendor.name,
+        slug: vendor.slug,
+        description: vendor.description,
+        logo: vendor.logo,
+        status: vendor.status,
+        businessInfo: vendor.businessInfo,
+        createdAt: vendor.createdAt,
+        updatedAt: vendor.updatedAt,
+        stats,
+      };
+    });
+  }
+
+  private async getVendorMarketplaceStats(
+    vendorIds: string[],
+  ): Promise<Map<string, PublicVendorView["stats"]>> {
+    const stats = new Map<string, PublicVendorView["stats"]>();
+
+    if (vendorIds.length === 0) {
+      return stats;
+    }
+
+    const rows = await this.productRepository
+      .createQueryBuilder("product")
+      .select("product.vendorId", "vendorId")
+      .addSelect("COUNT(product._id)::int", "productCount")
+      .addSelect("COALESCE(SUM((product.rating->>'count')::int), 0)::int", "reviewCount")
+      .addSelect(
+        "COALESCE(SUM(((product.rating->>'avg')::numeric) * ((product.rating->>'count')::int)), 0)::numeric",
+        "weightedRatingSum",
+      )
+      .where("product.vendorId IN (:...vendorIds)", { vendorIds })
+      .andWhere("product.status = :status", { status: "published" })
+      .groupBy("product.vendorId")
+      .getRawMany<{
+        vendorId: string;
+        productCount: string | number;
+        reviewCount: string | number;
+        weightedRatingSum: string | number;
+      }>();
+
+    for (const row of rows) {
+      const productCount = Number(row.productCount ?? 0);
+      const reviewCount = Number(row.reviewCount ?? 0);
+      const weightedRatingSum = Number(row.weightedRatingSum ?? 0);
+      const avgRating =
+        reviewCount > 0
+          ? Number((weightedRatingSum / reviewCount).toFixed(2))
+          : 0;
+
+      stats.set(row.vendorId, {
+        productCount,
+        reviewCount,
+        avgRating,
+      });
+    }
+
+    return stats;
   }
 
   private generateSlug(name: string): string {
