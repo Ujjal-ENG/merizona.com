@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { In, Repository } from "typeorm";
+import { DataSource, In, Repository } from "typeorm";
 import { PaginatedResponse } from "../../common/interfaces";
 import { Product } from "../catalog/schemas/product.schema";
 import { Vendor } from "../vendors/schemas/vendor.schema";
@@ -29,6 +29,21 @@ const VENDOR_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   refunded: [],
 };
 
+type CheckoutItemWithVendor = OrderItem & { vendorId: string };
+
+export interface CheckoutResult {
+  orders: OrderDocument[];
+  summary: {
+    orderCount: number;
+    vendorCount: number;
+    subtotalInCents: number;
+    shippingInCents: number;
+    taxInCents: number;
+    totalInCents: number;
+    platformCommissionInCents: number;
+  };
+}
+
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
@@ -40,19 +55,26 @@ export class OrdersService {
     private readonly productRepository: Repository<Product>,
     @InjectRepository(Vendor)
     private readonly vendorRepository: Repository<Vendor>,
+    private readonly dataSource: DataSource,
   ) {}
 
-  async checkout(customerId: string, dto: CheckoutDto): Promise<OrderDocument> {
+  async checkout(customerId: string, dto: CheckoutDto): Promise<CheckoutResult> {
     const products = await this.productRepository.findBy({
       _id: In([...new Set(dto.items.map((item) => item.productId))]),
     });
 
     const productsById = new Map(products.map((product) => [product._id, product]));
 
-    const mappedItems = dto.items.map((item) => {
+    const mappedItems: CheckoutItemWithVendor[] = dto.items.map((item) => {
       const product = productsById.get(item.productId);
       if (!product) {
         throw new NotFoundException(`Product not found: ${item.productId}`);
+      }
+
+      if (product.status !== "published") {
+        throw new BadRequestException(
+          `Product '${product.title}' is not available for checkout`,
+        );
       }
 
       const variant = product.variants.find((v) => v.sku === item.sku);
@@ -75,51 +97,82 @@ export class OrdersService {
       return mapped;
     });
 
-    const vendorIds = [...new Set(mappedItems.map((item) => item.vendorId))];
-    if (vendorIds.length !== 1) {
-      throw new BadRequestException(
-        "Checkout currently supports items from a single vendor per order",
-      );
-    }
+    const itemsByVendor = this.groupItemsByVendor(mappedItems);
+    const vendorIds = [...itemsByVendor.keys()];
 
-    const vendorId = vendorIds[0];
-    const vendor = await this.vendorRepository.findOne({ where: { _id: vendorId } });
-    if (!vendor) {
+    const vendors = await this.vendorRepository.findBy({ _id: In(vendorIds) });
+    if (vendors.length !== vendorIds.length) {
       throw new NotFoundException("Vendor not found for checkout items");
     }
 
-    const subtotalInCents = mappedItems.reduce(
-      (acc, item) => acc + item.priceInCents * item.quantity,
-      0,
-    );
+    const vendorsById = new Map(vendors.map((vendor) => [vendor._id, vendor]));
+    for (const vendorId of vendorIds) {
+      const vendor = vendorsById.get(vendorId);
+      if (!vendor) {
+        throw new NotFoundException("Vendor not found for checkout items");
+      }
+      this.assertVendorIsOrderable(vendor);
+    }
 
-    const shippingInCents = 0;
-    const taxInCents = 0;
-    const totalInCents = subtotalInCents + shippingInCents + taxInCents;
-    const platformCommissionInCents = Math.round(
-      totalInCents * Math.max(vendor.commissionRate ?? 0, 0),
-    );
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
 
-    const order = await this.orderRepository.save(
-      this.orderRepository.create({
-        orderNumber: await this.generateOrderNumber(),
-        customerId,
-        vendorId,
-        items: mappedItems.map(({ vendorId: _vendorId, ...item }) => item),
-        shippingAddress: dto.shippingAddress,
-        subtotalInCents,
-        shippingInCents,
-        taxInCents,
-        totalInCents,
-        platformCommissionInCents,
-        status: "pending",
-        paymentIntentId: dto.paymentIntentId,
-      }),
-    );
+    try {
+      const orderRepository = queryRunner.manager.getRepository(Order);
+      const createdOrders: OrderDocument[] = [];
 
-    this.logger.log(`Order created: ${order.orderNumber} (${order._id})`);
+      for (const vendorId of vendorIds) {
+        const vendor = vendorsById.get(vendorId);
+        if (!vendor) {
+          throw new NotFoundException("Vendor not found for checkout items");
+        }
 
-    return order;
+        const vendorItems = itemsByVendor.get(vendorId) ?? [];
+        const subtotalInCents = vendorItems.reduce(
+          (acc, item) => acc + item.priceInCents * item.quantity,
+          0,
+        );
+        const shippingInCents = 0;
+        const taxInCents = 0;
+        const totalInCents = subtotalInCents + shippingInCents + taxInCents;
+        const platformCommissionInCents = Math.round(
+          totalInCents * Math.max(vendor.commissionRate ?? 0, 0),
+        );
+
+        const order = await orderRepository.save(
+          orderRepository.create({
+            orderNumber: await this.generateOrderNumber(orderRepository),
+            customerId,
+            vendorId,
+            items: vendorItems.map(({ vendorId: _vendorId, ...item }) => item),
+            shippingAddress: dto.shippingAddress,
+            subtotalInCents,
+            shippingInCents,
+            taxInCents,
+            totalInCents,
+            platformCommissionInCents,
+            status: "pending",
+            paymentIntentId: dto.paymentIntentId,
+          }),
+        );
+
+        createdOrders.push(order);
+      }
+
+      await queryRunner.commitTransaction();
+
+      for (const order of createdOrders) {
+        this.logger.log(`Order created: ${order.orderNumber} (${order._id})`);
+      }
+
+      return this.buildCheckoutResult(createdOrders, vendorIds.length);
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   async findByCustomer(
@@ -204,6 +257,52 @@ export class OrdersService {
     return updated;
   }
 
+  async markCheckoutSessionPaid(checkoutSessionId: string): Promise<number> {
+    const result = await this.orderRepository
+      .createQueryBuilder()
+      .update(Order)
+      .set({ status: "confirmed" })
+      .where("paymentIntentId = :checkoutSessionId", { checkoutSessionId })
+      .andWhere("status = :currentStatus", { currentStatus: "pending" })
+      .execute();
+
+    const affected = result.affected ?? 0;
+    if (affected > 0) {
+      this.logger.log(
+        `Marked ${affected} order(s) as confirmed for checkout session ${checkoutSessionId}`,
+      );
+    } else {
+      this.logger.warn(
+        `No pending orders found for paid checkout session ${checkoutSessionId}`,
+      );
+    }
+
+    return affected;
+  }
+
+  async markCheckoutSessionFailed(checkoutSessionId: string): Promise<number> {
+    const result = await this.orderRepository
+      .createQueryBuilder()
+      .update(Order)
+      .set({ status: "cancelled" })
+      .where("paymentIntentId = :checkoutSessionId", { checkoutSessionId })
+      .andWhere("status = :currentStatus", { currentStatus: "pending" })
+      .execute();
+
+    const affected = result.affected ?? 0;
+    if (affected > 0) {
+      this.logger.log(
+        `Marked ${affected} order(s) as cancelled for failed checkout session ${checkoutSessionId}`,
+      );
+    } else {
+      this.logger.warn(
+        `No pending orders found for failed/expired checkout session ${checkoutSessionId}`,
+      );
+    }
+
+    return affected;
+  }
+
   private async paginate(
     baseQuery: ReturnType<Repository<Order>["createQueryBuilder"]>,
     query: OrdersQueryDto,
@@ -245,20 +344,86 @@ export class OrdersService {
     return allowed.includes(sort) ? sort : "createdAt";
   }
 
-  private async generateOrderNumber(): Promise<string> {
+  private async generateOrderNumber(
+    orderRepository: Repository<Order> = this.orderRepository,
+  ): Promise<string> {
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
 
     for (let i = 0; i < 8; i += 1) {
       const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
       const orderNumber = `MRZ-${date}-${suffix}`;
 
-      const exists = await this.orderRepository.findOne({ where: { orderNumber } });
+      const exists = await orderRepository.findOne({ where: { orderNumber } });
       if (!exists) {
         return orderNumber;
       }
     }
 
     throw new BadRequestException("Unable to generate a unique order number");
+  }
+
+  private groupItemsByVendor(
+    items: CheckoutItemWithVendor[],
+  ): Map<string, CheckoutItemWithVendor[]> {
+    const grouped = new Map<string, CheckoutItemWithVendor[]>();
+
+    for (const item of items) {
+      const bucket = grouped.get(item.vendorId);
+      if (bucket) {
+        bucket.push(item);
+      } else {
+        grouped.set(item.vendorId, [item]);
+      }
+    }
+
+    return grouped;
+  }
+
+  private buildCheckoutResult(
+    orders: OrderDocument[],
+    vendorCount: number,
+  ): CheckoutResult {
+    const subtotalInCents = orders.reduce(
+      (acc, order) => acc + order.subtotalInCents,
+      0,
+    );
+    const shippingInCents = orders.reduce(
+      (acc, order) => acc + order.shippingInCents,
+      0,
+    );
+    const taxInCents = orders.reduce((acc, order) => acc + order.taxInCents, 0);
+    const totalInCents = orders.reduce((acc, order) => acc + order.totalInCents, 0);
+    const platformCommissionInCents = orders.reduce(
+      (acc, order) => acc + order.platformCommissionInCents,
+      0,
+    );
+
+    return {
+      orders,
+      summary: {
+        orderCount: orders.length,
+        vendorCount,
+        subtotalInCents,
+        shippingInCents,
+        taxInCents,
+        totalInCents,
+        platformCommissionInCents,
+      },
+    };
+  }
+
+  private assertVendorIsOrderable(vendor: Vendor): void {
+    if (vendor.status !== "approved") {
+      throw new BadRequestException(
+        `Vendor '${vendor.name}' is not approved to accept orders`,
+      );
+    }
+
+    if (vendor.packageStatus !== "active") {
+      throw new BadRequestException(
+        `Vendor '${vendor.name}' does not have an active package`,
+      );
+    }
   }
 
   private async assertVendorCanOperate(vendorId: string): Promise<void> {
