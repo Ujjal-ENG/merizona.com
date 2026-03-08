@@ -47,7 +47,7 @@ export class User {
     length: 20,
     default: "customer",
   })
-  role: "platform_admin" | "customer";
+  role: "platform_admin" | "vendor" | "customer";
 
   @Column({ type: "jsonb" })
   profile: UserProfile;
