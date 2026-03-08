@@ -22,7 +22,7 @@ export class UsersService {
     password: string;
     firstName: string;
     lastName: string;
-    role?: "platform_admin" | "customer";
+    role?: "platform_admin" | "vendor" | "customer";
   }): Promise<UserDocument> {
     const normalizedEmail = data.email.toLowerCase();
     const existing = await this.userRepository.findOne({
