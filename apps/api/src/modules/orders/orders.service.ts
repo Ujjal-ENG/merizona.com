@@ -395,6 +395,12 @@ export class OrdersService {
       );
     }
 
+    if (vendor.verificationStatus !== "verified") {
+      throw new ForbiddenException(
+        "Vendor must complete business verification before managing orders",
+      );
+    }
+
     if (vendor.packageStatus !== "active") {
       throw new ForbiddenException(
         "Vendor package must be active before running the business",
