@@ -93,6 +93,12 @@ export class CheckoutPreparationService {
       );
     }
 
+    if (vendor.verificationStatus !== "verified") {
+      throw new BadRequestException(
+        `Vendor '${vendor.name}' has not completed business verification`,
+      );
+    }
+
     if (vendor.packageStatus !== "active") {
       throw new BadRequestException(
         `Vendor '${vendor.name}' does not have an active package`,
