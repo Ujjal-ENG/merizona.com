@@ -5,7 +5,7 @@
 export interface UserContext {
   _id: string;
   email: string;
-  role: "platform_admin" | "customer";
+  role: "platform_admin" | "vendor" | "customer";
   vendorId?: string;
   membership?: {
     role: "owner" | "manager" | "staff";
