@@ -10,6 +10,7 @@ import { DatabaseModule } from "./modules/database/database.module";
 import { HealthModule } from "./modules/health/health.module";
 import { InventoryModule } from "./modules/inventory/inventory.module";
 import { OrdersModule } from "./modules/orders/orders.module";
+import { PaymentsModule } from "./modules/payments/payments.module";
 import { UsersModule } from "./modules/users/users.module";
 import { VendorsModule } from "./modules/vendors/vendors.module";
 import { WebhooksModule } from "./modules/webhooks/webhooks.module";
@@ -50,6 +51,7 @@ import { WebhooksModule } from "./modules/webhooks/webhooks.module";
     CatalogModule,
     InventoryModule,
     OrdersModule,
+    PaymentsModule,
     WebhooksModule,
   ],
   providers: [
