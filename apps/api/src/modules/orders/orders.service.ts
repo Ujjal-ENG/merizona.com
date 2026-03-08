@@ -6,16 +6,20 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { DataSource, In, Repository } from "typeorm";
+import { DataSource, Repository } from "typeorm";
 import { PaginatedResponse } from "../../common/interfaces";
-import { Product } from "../catalog/schemas/product.schema";
 import { Vendor } from "../vendors/schemas/vendor.schema";
+import {
+  CheckoutPreparationService,
+  PreparedCheckoutContext,
+  PreparedCheckoutItem,
+} from "./checkout-preparation.service";
 import { CheckoutDto } from "./dto/checkout.dto";
 import { OrdersQueryDto } from "./dto/orders-query.dto";
 import {
   Order,
   OrderDocument,
-  OrderItem,
+  OrderPaymentProvider,
   OrderStatus,
 } from "./schemas/order.schema";
 
@@ -28,8 +32,6 @@ const VENDOR_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   cancelled: [],
   refunded: [],
 };
-
-type CheckoutItemWithVendor = OrderItem & { vendorId: string };
 
 export interface CheckoutResult {
   orders: OrderDocument[];
@@ -51,68 +53,22 @@ export class OrdersService {
   constructor(
     @InjectRepository(Order)
     private readonly orderRepository: Repository<Order>,
-    @InjectRepository(Product)
-    private readonly productRepository: Repository<Product>,
     @InjectRepository(Vendor)
     private readonly vendorRepository: Repository<Vendor>,
     private readonly dataSource: DataSource,
+    private readonly checkoutPreparationService: CheckoutPreparationService,
   ) {}
 
-  async checkout(customerId: string, dto: CheckoutDto): Promise<CheckoutResult> {
-    const products = await this.productRepository.findBy({
-      _id: In([...new Set(dto.items.map((item) => item.productId))]),
-    });
-
-    const productsById = new Map(products.map((product) => [product._id, product]));
-
-    const mappedItems: CheckoutItemWithVendor[] = dto.items.map((item) => {
-      const product = productsById.get(item.productId);
-      if (!product) {
-        throw new NotFoundException(`Product not found: ${item.productId}`);
-      }
-
-      if (product.status !== "published") {
-        throw new BadRequestException(
-          `Product '${product.title}' is not available for checkout`,
-        );
-      }
-
-      const variant = product.variants.find((v) => v.sku === item.sku);
-      if (!variant) {
-        throw new BadRequestException(
-          `Variant SKU '${item.sku}' does not exist for product '${product.title}'`,
-        );
-      }
-
-      const mapped: OrderItem & { vendorId: string } = {
-        productId: product._id,
-        sku: variant.sku,
-        title: product.title,
-        priceInCents: variant.priceInCents,
-        quantity: item.quantity,
-        imageUrl: variant.images?.[0] ?? "",
-        vendorId: product.vendorId,
-      };
-
-      return mapped;
-    });
-
-    const itemsByVendor = this.groupItemsByVendor(mappedItems);
-    const vendorIds = [...itemsByVendor.keys()];
-
-    const vendors = await this.vendorRepository.findBy({ _id: In(vendorIds) });
-    if (vendors.length !== vendorIds.length) {
-      throw new NotFoundException("Vendor not found for checkout items");
-    }
-
-    const vendorsById = new Map(vendors.map((vendor) => [vendor._id, vendor]));
-    for (const vendorId of vendorIds) {
-      const vendor = vendorsById.get(vendorId);
-      if (!vendor) {
-        throw new NotFoundException("Vendor not found for checkout items");
-      }
-      this.assertVendorIsOrderable(vendor);
-    }
+  async checkout(
+    customerId: string,
+    dto: CheckoutDto,
+    preparedCheckout?: PreparedCheckoutContext,
+  ): Promise<CheckoutResult> {
+    const checkoutContext =
+      preparedCheckout ?? (await this.checkoutPreparationService.prepare(dto.items));
+    const itemsByVendor = this.groupItemsByVendor(checkoutContext.items);
+    const vendorIds = checkoutContext.vendorIds;
+    const vendorsById = checkoutContext.vendorsById;
 
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
@@ -154,6 +110,7 @@ export class OrdersService {
             platformCommissionInCents,
             status: "pending",
             paymentIntentId: dto.paymentIntentId,
+            paymentProvider: dto.paymentProvider ?? "stripe",
           }),
         );
 
@@ -257,46 +214,60 @@ export class OrdersService {
     return updated;
   }
 
-  async markCheckoutSessionPaid(checkoutSessionId: string): Promise<number> {
+  async markCheckoutSessionPaid(
+    checkoutSessionId: string,
+    paymentProvider: OrderPaymentProvider = "stripe",
+  ): Promise<number> {
     const result = await this.orderRepository
       .createQueryBuilder()
       .update(Order)
       .set({ status: "confirmed" })
       .where("paymentIntentId = :checkoutSessionId", { checkoutSessionId })
+      .andWhere(
+        "(paymentProvider = :paymentProvider OR paymentProvider IS NULL)",
+        { paymentProvider },
+      )
       .andWhere("status = :currentStatus", { currentStatus: "pending" })
       .execute();
 
     const affected = result.affected ?? 0;
     if (affected > 0) {
       this.logger.log(
-        `Marked ${affected} order(s) as confirmed for checkout session ${checkoutSessionId}`,
+        `Marked ${affected} order(s) as confirmed for ${paymentProvider} checkout session ${checkoutSessionId}`,
       );
     } else {
       this.logger.warn(
-        `No pending orders found for paid checkout session ${checkoutSessionId}`,
+        `No pending orders found for paid ${paymentProvider} checkout session ${checkoutSessionId}`,
       );
     }
 
     return affected;
   }
 
-  async markCheckoutSessionFailed(checkoutSessionId: string): Promise<number> {
+  async markCheckoutSessionFailed(
+    checkoutSessionId: string,
+    paymentProvider: OrderPaymentProvider = "stripe",
+  ): Promise<number> {
     const result = await this.orderRepository
       .createQueryBuilder()
       .update(Order)
       .set({ status: "cancelled" })
       .where("paymentIntentId = :checkoutSessionId", { checkoutSessionId })
+      .andWhere(
+        "(paymentProvider = :paymentProvider OR paymentProvider IS NULL)",
+        { paymentProvider },
+      )
       .andWhere("status = :currentStatus", { currentStatus: "pending" })
       .execute();
 
     const affected = result.affected ?? 0;
     if (affected > 0) {
       this.logger.log(
-        `Marked ${affected} order(s) as cancelled for failed checkout session ${checkoutSessionId}`,
+        `Marked ${affected} order(s) as cancelled for failed ${paymentProvider} checkout session ${checkoutSessionId}`,
       );
     } else {
       this.logger.warn(
-        `No pending orders found for failed/expired checkout session ${checkoutSessionId}`,
+        `No pending orders found for failed/expired ${paymentProvider} checkout session ${checkoutSessionId}`,
       );
     }
 
@@ -363,9 +334,9 @@ export class OrdersService {
   }
 
   private groupItemsByVendor(
-    items: CheckoutItemWithVendor[],
-  ): Map<string, CheckoutItemWithVendor[]> {
-    const grouped = new Map<string, CheckoutItemWithVendor[]>();
+    items: PreparedCheckoutItem[],
+  ): Map<string, PreparedCheckoutItem[]> {
+    const grouped = new Map<string, PreparedCheckoutItem[]>();
 
     for (const item of items) {
       const bucket = grouped.get(item.vendorId);
@@ -410,20 +381,6 @@ export class OrdersService {
         platformCommissionInCents,
       },
     };
-  }
-
-  private assertVendorIsOrderable(vendor: Vendor): void {
-    if (vendor.status !== "approved") {
-      throw new BadRequestException(
-        `Vendor '${vendor.name}' is not approved to accept orders`,
-      );
-    }
-
-    if (vendor.packageStatus !== "active") {
-      throw new BadRequestException(
-        `Vendor '${vendor.name}' does not have an active package`,
-      );
-    }
   }
 
   private async assertVendorCanOperate(vendorId: string): Promise<void> {
