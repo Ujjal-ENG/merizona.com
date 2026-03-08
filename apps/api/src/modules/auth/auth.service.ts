@@ -11,6 +11,7 @@ import {
   Membership,
   MembershipDocument,
 } from "../vendors/schemas/membership.schema";
+import { VendorsService } from "../vendors/vendors.service";
 import { LoginDto } from "./dto/login.dto";
 import { RegisterDto } from "./dto/register.dto";
 
@@ -28,6 +29,7 @@ export class AuthService {
     private readonly usersService: UsersService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly vendorsService: VendorsService,
     @InjectRepository(Membership)
     private readonly membershipRepository: Repository<Membership>,
   ) {}
@@ -35,22 +37,58 @@ export class AuthService {
   async register(
     dto: RegisterDto,
   ): Promise<{ user: UserDocument; tokens: TokenPair }> {
+    return this.registerWithRole(dto, "customer");
+  }
+
+  async registerVendor(
+    dto: RegisterDto,
+  ): Promise<{ user: UserDocument; tokens: TokenPair }> {
+    return this.registerWithRole(dto, "vendor");
+  }
+
+  async login(
+    dto: LoginDto,
+  ): Promise<{ user: UserDocument; tokens: TokenPair }> {
+    return this.loginWithRoles(dto, ["customer", "platform_admin"], {
+      disallowedRoleMessage: "Vendor accounts must use vendor login",
+    });
+  }
+
+  async loginVendor(
+    dto: LoginDto,
+  ): Promise<{ user: UserDocument; tokens: TokenPair }> {
+    return this.loginWithRoles(dto, ["vendor"], {
+      disallowedRoleMessage: "Customer and admin accounts must use the main login",
+    });
+  }
+
+  private async registerWithRole(
+    dto: RegisterDto,
+    role: "customer" | "vendor",
+  ): Promise<{ user: UserDocument; tokens: TokenPair }> {
     const user = await this.usersService.create({
       email: dto.email,
       password: dto.password,
       firstName: dto.firstName,
       lastName: dto.lastName,
+      role,
     });
+
+    if (role === "vendor") {
+      await this.vendorsService.ensureVendorAccountForUser(user);
+    }
 
     const tokens = await this.generateTokens(user);
     await this.storeRefreshToken(user._id.toString(), tokens.refreshToken);
 
-    this.logger.log(`User registered: ${dto.email}`);
+    this.logger.log(`${role} user registered: ${dto.email}`);
     return { user, tokens };
   }
 
-  async login(
+  private async loginWithRoles(
     dto: LoginDto,
+    allowedRoles: Array<UserDocument["role"]>,
+    options: { disallowedRoleMessage: string },
   ): Promise<{ user: UserDocument; tokens: TokenPair }> {
     const user = await this.usersService.findByEmail(dto.email);
     if (!user) {
@@ -69,10 +107,18 @@ export class AuthService {
       throw new UnauthorizedException("Account is not active");
     }
 
+    if (!allowedRoles.includes(user.role)) {
+      throw new UnauthorizedException(options.disallowedRoleMessage);
+    }
+
+    if (user.role === "vendor") {
+      await this.vendorsService.ensureVendorAccountForUser(user);
+    }
+
     const tokens = await this.generateTokens(user);
     await this.storeRefreshToken(user._id.toString(), tokens.refreshToken);
 
-    this.logger.log(`User logged in: ${dto.email}`);
+    this.logger.log(`User logged in: ${dto.email} (${user.role})`);
     return { user, tokens };
   }
 
