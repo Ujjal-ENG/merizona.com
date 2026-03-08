@@ -66,6 +66,19 @@ export interface VendorMarketplaceStats {
   avgRating: number;
 }
 
+export type PaymentProvider = "stripe";
+
+export interface PaymentProviderOption {
+  provider: PaymentProvider;
+  label: string;
+  description: string;
+}
+
+export interface PaymentProviderListing {
+  defaultProvider: PaymentProvider;
+  providers: PaymentProviderOption[];
+}
+
 export interface PublicVendor {
   _id: string;
   name: string;
@@ -162,6 +175,7 @@ export interface Order {
   platformCommissionInCents: number;
   status: OrderStatus;
   paymentIntentId?: string;
+  paymentProvider?: PaymentProvider;
   createdAt: string;
   updatedAt: string;
 }
