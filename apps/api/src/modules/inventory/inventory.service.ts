@@ -160,6 +160,12 @@ export class InventoryService {
       );
     }
 
+    if (vendor.verificationStatus !== "verified") {
+      throw new ForbiddenException(
+        "Vendor must complete business verification before running inventory operations",
+      );
+    }
+
     if (vendor.packageStatus !== "active") {
       throw new ForbiddenException(
         "Vendor package must be active before running the business",
