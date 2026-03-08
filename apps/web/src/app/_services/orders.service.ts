@@ -1,5 +1,10 @@
 import { apiFetch, normalizePaginatedResponse } from "./api-client";
-import type { CheckoutResult, Order, PaginatedResponse } from "../_lib/types";
+import type {
+  CheckoutResult,
+  Order,
+  PaginatedResponse,
+  PaymentProvider,
+} from "../_lib/types";
 
 export interface CheckoutPayload {
   items: Array<{
@@ -17,6 +22,7 @@ export interface CheckoutPayload {
     country: string;
   };
   paymentIntentId: string;
+  paymentProvider?: PaymentProvider;
 }
 
 export async function checkout(data: CheckoutPayload): Promise<CheckoutResult> {
