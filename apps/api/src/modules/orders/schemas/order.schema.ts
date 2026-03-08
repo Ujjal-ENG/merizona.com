@@ -22,6 +22,8 @@ export const ORDER_STATUSES = [
 ] as const;
 
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
+export const ORDER_PAYMENT_PROVIDERS = ["stripe"] as const;
+export type OrderPaymentProvider = (typeof ORDER_PAYMENT_PROVIDERS)[number];
 
 export interface OrderItem {
   productId: string;
@@ -97,6 +99,9 @@ export class Order {
 
   @Column({ type: "varchar", length: 255, nullable: true })
   paymentIntentId?: string;
+
+  @Column({ type: "varchar", length: 32, nullable: true })
+  paymentProvider?: OrderPaymentProvider;
 
   @CreateDateColumn({ type: "timestamptz" })
   createdAt: Date;
