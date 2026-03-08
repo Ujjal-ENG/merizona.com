@@ -39,6 +39,24 @@ export class AuthController {
     });
   }
 
+  @Post("vendor/register")
+  @Public()
+  async registerVendor(@Body() dto: RegisterDto, @Res() reply: FastifyReply) {
+    const { user, tokens } = await this.authService.registerVendor(dto);
+
+    this.setAuthCookies(reply, tokens.accessToken, tokens.refreshToken);
+
+    return reply.status(HttpStatus.CREATED).send({
+      message: "Vendor registration successful",
+      user: {
+        _id: user._id,
+        email: user.email,
+        role: user.role,
+        profile: user.profile,
+      },
+    });
+  }
+
   @Post("login")
   @Public()
   @Throttle({ short: { limit: 5, ttl: 60000 } }) // 5 attempts per minute
@@ -50,6 +68,26 @@ export class AuthController {
 
     return reply.send({
       message: "Login successful",
+      user: {
+        _id: user._id,
+        email: user.email,
+        role: user.role,
+        profile: user.profile,
+      },
+    });
+  }
+
+  @Post("vendor/login")
+  @Public()
+  @Throttle({ short: { limit: 5, ttl: 60000 } })
+  @HttpCode(HttpStatus.OK)
+  async loginVendor(@Body() dto: LoginDto, @Res() reply: FastifyReply) {
+    const { user, tokens } = await this.authService.loginVendor(dto);
+
+    this.setAuthCookies(reply, tokens.accessToken, tokens.refreshToken);
+
+    return reply.send({
+      message: "Vendor login successful",
       user: {
         _id: user._id,
         email: user.email,
