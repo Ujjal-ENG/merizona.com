@@ -9,6 +9,7 @@ import {
   OrdersController,
   VendorOrdersController,
 } from "./orders.controller";
+import { CheckoutPreparationService } from "./checkout-preparation.service";
 import { OrdersService } from "./orders.service";
 import { Order } from "./schemas/order.schema";
 
@@ -20,7 +21,7 @@ import { Order } from "./schemas/order.schema";
     VendorOrdersController,
     AdminOrdersController,
   ],
-  providers: [OrdersService],
-  exports: [OrdersService],
+  providers: [OrdersService, CheckoutPreparationService],
+  exports: [OrdersService, CheckoutPreparationService],
 })
 export class OrdersModule {}
