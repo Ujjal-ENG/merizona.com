@@ -12,7 +12,7 @@ export const addressSchema = z.object({
 });
 
 export const checkoutSchema = z.object({
-  shippingAddress: addressSchema,
+  shippingAddress: addressSchema.omit({ isDefault: true }),
 });
 
 export type AddressInput = z.infer<typeof addressSchema>;
