@@ -43,7 +43,10 @@ export class WebhooksService {
       case "checkout.session.completed": {
         const paymentStatus = this.pickStringField(session, "payment_status");
         if (paymentStatus === "paid" && checkoutSessionId) {
-          await this.ordersService.markCheckoutSessionPaid(checkoutSessionId);
+          await this.ordersService.markCheckoutSessionPaid(
+            checkoutSessionId,
+            "stripe",
+          );
         } else {
           this.logger.log(
             `checkout.session.completed received with payment_status='${paymentStatus ?? "unknown"}' for session '${checkoutSessionId ?? "unknown"}'`,
@@ -54,7 +57,10 @@ export class WebhooksService {
 
       case "checkout.session.async_payment_succeeded": {
         if (checkoutSessionId) {
-          await this.ordersService.markCheckoutSessionPaid(checkoutSessionId);
+          await this.ordersService.markCheckoutSessionPaid(
+            checkoutSessionId,
+            "stripe",
+          );
         }
         break;
       }
@@ -62,7 +68,10 @@ export class WebhooksService {
       case "checkout.session.async_payment_failed":
       case "checkout.session.expired": {
         if (checkoutSessionId) {
-          await this.ordersService.markCheckoutSessionFailed(checkoutSessionId);
+          await this.ordersService.markCheckoutSessionFailed(
+            checkoutSessionId,
+            "stripe",
+          );
         }
         break;
       }
