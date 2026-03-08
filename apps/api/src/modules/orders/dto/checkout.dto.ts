@@ -2,6 +2,7 @@ import { Type } from "class-transformer";
 import {
   ArrayMinSize,
   IsArray,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -11,6 +12,10 @@ import {
   Min,
   ValidateNested,
 } from "class-validator";
+import {
+  ORDER_PAYMENT_PROVIDERS,
+  type OrderPaymentProvider,
+} from "../schemas/order.schema";
 
 export class CheckoutOrderItemDto {
   @IsUUID()
@@ -79,4 +84,9 @@ export class CheckoutDto {
   @IsString()
   @MaxLength(255)
   paymentIntentId?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(ORDER_PAYMENT_PROVIDERS)
+  paymentProvider?: OrderPaymentProvider;
 }
