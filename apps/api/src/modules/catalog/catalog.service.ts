@@ -138,6 +138,9 @@ export class CatalogService {
       .leftJoinAndSelect("product.vendor", "vendor")
       .where("product.status = :status", { status: "published" })
       .andWhere("vendor.status = :vendorStatus", { vendorStatus: "approved" })
+      .andWhere("vendor.verificationStatus = :verificationStatus", {
+        verificationStatus: "verified",
+      })
       .andWhere("vendor.packageStatus = :packageStatus", {
         packageStatus: "active",
       });
@@ -210,6 +213,9 @@ export class CatalogService {
       .where("product.slug = :slug", { slug })
       .andWhere("product.status = :status", { status: "published" })
       .andWhere("vendor.status = :vendorStatus", { vendorStatus: "approved" })
+      .andWhere("vendor.verificationStatus = :verificationStatus", {
+        verificationStatus: "verified",
+      })
       .andWhere("vendor.packageStatus = :packageStatus", {
         packageStatus: "active",
       })
@@ -641,9 +647,9 @@ export class CatalogService {
       throw new NotFoundException("Vendor not found");
     }
 
-    if (vendor.status !== "approved") {
+    if (vendor.status === "suspended") {
       throw new ForbiddenException(
-        "Vendor must be approved by admin before uploading products",
+        "Suspended vendors cannot manage products",
       );
     }
 
