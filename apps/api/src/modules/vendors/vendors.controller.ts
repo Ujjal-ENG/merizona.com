@@ -4,14 +4,12 @@ import {
   ForbiddenException,
   Get,
   Patch,
-  Post,
   UseGuards,
 } from "@nestjs/common";
 import { CheckAbility, CurrentUser } from "../../common/decorators";
 import { UserContext } from "../../common/interfaces";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { AbilityGuard } from "../casl/ability.guard";
-import { ApplyVendorDto } from "./dto/apply-vendor.dto";
 import { UpdateVendorDto } from "./dto/update-vendor.dto";
 import { VendorsService } from "./vendors.service";
 
@@ -19,11 +17,6 @@ import { VendorsService } from "./vendors.service";
 @UseGuards(JwtAuthGuard, AbilityGuard)
 export class VendorsController {
   constructor(private readonly vendorsService: VendorsService) {}
-
-  @Post("apply")
-  async apply(@CurrentUser() user: UserContext, @Body() dto: ApplyVendorDto) {
-    return this.vendorsService.apply(user._id, dto);
-  }
 
   @Get("profile")
   @CheckAbility({ action: "read", subject: "Vendor" })
