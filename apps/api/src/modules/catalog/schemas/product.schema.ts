@@ -5,18 +5,14 @@ import {
   Index,
   JoinColumn,
   ManyToOne,
+  OneToMany,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from "typeorm";
 import { Vendor } from "../../vendors/schemas/vendor.schema";
 
-export interface ProductVariant {
-  sku: string;
-  label: string;
-  priceInCents: number;
-  compareAtPriceInCents?: number;
-  images: string[];
-}
+import { ProductImage } from "./product-image.schema";
+import { ProductVariant } from "./product-variant.schema";
 
 export interface ProductRating {
   avg: number;
@@ -53,8 +49,15 @@ export class Product {
   @Column({ type: "jsonb", default: () => "'{}'::jsonb" })
   attributes: Record<string, string>;
 
-  @Column({ type: "jsonb", default: () => "'[]'::jsonb" })
+  @OneToMany(() => ProductVariant, (variant) => variant.product, {
+    cascade: true,
+  })
   variants: ProductVariant[];
+
+  @OneToMany(() => ProductImage, (image) => image.product, {
+    cascade: true,
+  })
+  images: ProductImage[];
 
   @Column({
     type: "varchar",
