@@ -1,14 +1,19 @@
 import { apiFetch, clientFetch, normalizePaginatedResponse } from "./api-client";
 import type {
-  Vendor,
-  PublicVendor,
   InventoryItem,
   PaginatedResponse,
+  PublicVendor,
+  Vendor,
+  VendorVerificationState,
 } from "../_lib/types";
 
-// ─── Vendor onboarding ────────────────────────────────────────────────────────
+export async function getVendorVerification(): Promise<VendorVerificationState> {
+  return apiFetch<VendorVerificationState>("/vendor/verification", {
+    revalidate: 0,
+  });
+}
 
-export async function applyAsVendor(data: {
+export async function submitVendorVerification(data: {
   name: string;
   description?: string;
   businessInfo: {
@@ -20,8 +25,12 @@ export async function applyAsVendor(data: {
     country?: string;
   };
   packageTier: "starter" | "growth" | "scale";
-}): Promise<Vendor> {
-  return apiFetch<Vendor>("/vendor/apply", {
+  documents: Array<{
+    type: "business_registration" | "tax_document" | "owner_id";
+    url: string;
+  }>;
+}): Promise<VendorVerificationState> {
+  return apiFetch<VendorVerificationState>("/vendor/verification", {
     method: "POST",
     body: JSON.stringify(data),
   });
@@ -37,8 +46,6 @@ export async function updateVendorSettings(data: Partial<Vendor>): Promise<Vendo
     body: JSON.stringify(data),
   });
 }
-
-// ─── Inventory ────────────────────────────────────────────────────────────────
 
 export async function getVendorInventory(
   page = 1,
@@ -61,8 +68,6 @@ export async function updateStock(
   });
 }
 
-// ─── Admin ────────────────────────────────────────────────────────────────────
-
 export async function getAdminVendors(
   page = 1,
   limit = 20,
@@ -80,9 +85,20 @@ export async function getAdminVendors(
   return normalizePaginatedResponse(response);
 }
 
-export async function approveVendor(id: string): Promise<Vendor> {
-  return clientFetch<Vendor>(`/api/admin/vendors/${id}/approve`, {
+export async function getAdminVendorById(id: string): Promise<Vendor> {
+  return apiFetch<Vendor>(`/admin/vendors/${id}`, { revalidate: 0 });
+}
+
+export async function verifyVendor(id: string): Promise<Vendor> {
+  return clientFetch<Vendor>(`/api/admin/vendors/${id}/verify`, {
     method: "POST",
+  });
+}
+
+export async function rejectVendor(id: string, reason: string): Promise<Vendor> {
+  return clientFetch<Vendor>(`/api/admin/vendors/${id}/reject`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
   });
 }
 
@@ -103,8 +119,6 @@ export async function deactivateVendorPackage(id: string): Promise<Vendor> {
     method: "POST",
   });
 }
-
-// ─── Public vendor discovery ────────────────────────────────────────────────
 
 export async function getPublicVendors(query: {
   page?: number;
