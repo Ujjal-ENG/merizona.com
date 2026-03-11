@@ -42,6 +42,13 @@ export const VENDOR_STATUS_LABELS: Record<string, string> = {
   suspended: "Suspended",
 };
 
+export const VENDOR_VERIFICATION_LABELS: Record<string, string> = {
+  not_started: "Not Started",
+  submitted: "Submitted",
+  verified: "Verified",
+  rejected: "Rejected",
+};
+
 export const VENDOR_PACKAGE_LABELS: Record<string, string> = {
   starter: "Starter",
   growth: "Growth",
