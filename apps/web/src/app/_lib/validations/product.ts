@@ -4,7 +4,7 @@ export const productVariantSchema = z.object({
   sku: z.string().min(1, "SKU is required"),
   label: z.string().min(1, "Label is required"),
   priceInCents: z.number().int().positive("Price must be a positive number"),
-  images: z.array(z.string().url()).default([]),
+  attributes: z.record(z.string()).default({}),
 });
 
 export const createProductSchema = z.object({
