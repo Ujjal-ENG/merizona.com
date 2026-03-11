@@ -30,8 +30,11 @@ export class CheckoutPreparationService {
   async prepare(
     checkoutItems: CheckoutOrderItemDto[],
   ): Promise<PreparedCheckoutContext> {
-    const products = await this.productRepository.findBy({
-      _id: In([...new Set(checkoutItems.map((item) => item.productId))]),
+    const products = await this.productRepository.find({
+      where: {
+        _id: In([...new Set(checkoutItems.map((item) => item.productId))]),
+      },
+      relations: ["variants", "images"],
     });
 
     const productsById = new Map(products.map((product) => [product._id, product]));
@@ -61,7 +64,10 @@ export class CheckoutPreparationService {
         title: product.title,
         priceInCents: variant.priceInCents,
         quantity: item.quantity,
-        imageUrl: variant.images?.[0] ?? "",
+        imageUrl:
+          product.images?.find(
+            (img) => img.variantId === variant._id || !img.variantId,
+          )?.url ?? "",
         vendorId: product.vendorId,
       };
     });
