@@ -15,6 +15,9 @@ import { Vendor } from "../vendors/schemas/vendor.schema";
 import { CatalogQueryDto } from "./dto/catalog-query.dto";
 import { CreateProductDto } from "./dto/create-product.dto";
 import { UpdateProductDto } from "./dto/update-product.dto";
+import { DeepPartial } from "typeorm";
+import { ProductImage } from "./schemas/product-image.schema";
+import { ProductVariant } from "./schemas/product-variant.schema";
 import { Product, ProductDocument } from "./schemas/product.schema";
 
 @Injectable()
@@ -136,6 +139,8 @@ export class CatalogService {
     const qb = this.productRepository
       .createQueryBuilder("product")
       .leftJoinAndSelect("product.vendor", "vendor")
+      .leftJoinAndSelect("product.variants", "variant")
+      .leftJoinAndSelect("product.images", "image")
       .where("product.status = :status", { status: "published" })
       .andWhere("vendor.status = :vendorStatus", { vendorStatus: "approved" })
       .andWhere("vendor.verificationStatus = :verificationStatus", {
@@ -174,8 +179,9 @@ export class CatalogService {
       qb.andWhere(
         `EXISTS (
           SELECT 1
-          FROM jsonb_array_elements(product.variants) AS variant
-          WHERE (variant->>'priceInCents')::int >= :minPriceInCents
+          FROM product_variants pv
+          WHERE pv."productId" = product._id
+          AND pv."priceInCents" >= :minPriceInCents
         )`,
         { minPriceInCents },
       );
@@ -185,8 +191,9 @@ export class CatalogService {
       qb.andWhere(
         `EXISTS (
           SELECT 1
-          FROM jsonb_array_elements(product.variants) AS variant
-          WHERE (variant->>'priceInCents')::int <= :maxPriceInCents
+          FROM product_variants pv
+          WHERE pv."productId" = product._id
+          AND pv."priceInCents" <= :maxPriceInCents
         )`,
         { maxPriceInCents },
       );
@@ -210,6 +217,8 @@ export class CatalogService {
     const product = await this.productRepository
       .createQueryBuilder("product")
       .leftJoinAndSelect("product.vendor", "vendor")
+      .leftJoinAndSelect("product.variants", "variant")
+      .leftJoinAndSelect("product.images", "image")
       .where("product.slug = :slug", { slug })
       .andWhere("product.status = :status", { status: "published" })
       .andWhere("vendor.status = :vendorStatus", { vendorStatus: "approved" })
@@ -259,6 +268,7 @@ export class CatalogService {
         vendorId,
         ...(normalizedStatus ? { status: normalizedStatus } : {}),
       },
+      relations: ["variants", "images"],
       order: { [sortField]: order === "asc" ? "ASC" : "DESC" } as any,
       skip: (page - 1) * limit,
       take: limit,
@@ -278,6 +288,7 @@ export class CatalogService {
 
     const product = await this.productRepository.findOne({
       where: { _id: productId, vendorId },
+      relations: ["variants", "images"],
     });
 
     if (!product) {
@@ -296,6 +307,7 @@ export class CatalogService {
 
     const product = await this.productRepository.findOne({
       where: { _id: productId },
+      relations: ["variants", "images"],
     });
 
     if (!product) {
@@ -455,8 +467,9 @@ export class CatalogService {
 
   private minVariantPriceExpression(): string {
     return `(
-      SELECT MIN((variant->>'priceInCents')::int)
-      FROM jsonb_array_elements(product.variants) AS variant
+      SELECT MIN(pv."priceInCents")
+      FROM product_variants pv
+      WHERE pv."productId" = product._id
     )`;
   }
 
@@ -474,7 +487,7 @@ export class CatalogService {
 
   private normalizeVariants(
     variants: CreateProductDto["variants"],
-  ): Product["variants"] {
+  ): ProductVariant[] {
     const normalized = (variants ?? []).map((variant) => {
       const sku = variant.sku.trim();
       const label = variant.label.trim();
@@ -488,8 +501,9 @@ export class CatalogService {
         label,
         priceInCents: variant.priceInCents,
         compareAtPriceInCents: variant.compareAtPriceInCents,
-        images: this.normalizeStringArray(variant.images),
-      };
+        attributes: (variant as any).attributes ?? {},
+        status: "active" as const,
+      } as unknown as ProductVariant;
     });
 
     const duplicateSkus = this.findDuplicates(normalized.map((variant) => variant.sku));
@@ -580,7 +594,7 @@ export class CatalogService {
     manager: EntityManager,
     productId: string,
     vendorId: string,
-    variants: Product["variants"],
+    variants: ProductVariant[],
   ): Promise<void> {
     const inventoryRepository = manager.getRepository(Inventory);
 
