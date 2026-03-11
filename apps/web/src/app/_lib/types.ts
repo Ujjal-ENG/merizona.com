@@ -2,8 +2,7 @@
 
 export type UserRole =
   | "platform_admin"
-  | "vendor_owner"
-  | "vendor_staff"
+  | "vendor"
   | "customer";
 
 export interface UserProfile {
@@ -41,9 +40,19 @@ export interface Vendor {
   _id: string;
   name: string;
   slug: string;
+  description?: string;
   logo?: string;
   status: "pending" | "approved" | "suspended";
-  businessInfo: {
+  verificationStatus: "not_started" | "submitted" | "verified" | "rejected";
+  verificationDocuments: Array<{
+    type: "business_registration" | "tax_document" | "owner_id";
+    url: string;
+    downloadUrl?: string;
+  }>;
+  verificationSubmittedAt?: string | null;
+  verificationReviewedAt?: string | null;
+  verificationRejectionReason?: string | null;
+  businessInfo?: {
     legalName: string;
     taxId?: string;
     address?: string;
@@ -58,6 +67,12 @@ export interface Vendor {
   packageStatus: "active" | "inactive";
   createdAt: string;
   updatedAt: string;
+}
+
+export interface VendorVerificationState {
+  vendor: Vendor | null;
+  verificationStatus: Vendor["verificationStatus"];
+  canAccessDashboard: boolean;
 }
 
 export interface VendorMarketplaceStats {
@@ -102,11 +117,21 @@ export interface PublicVendor {
 // ─── Product ──────────────────────────────────────────────────────────────────
 
 export interface ProductVariant {
+  _id: string;
   sku: string;
   label: string;
   priceInCents: number;
   compareAtPriceInCents?: number;
-  images: string[];
+  attributes: Record<string, string>;
+  status: "active" | "inactive";
+}
+
+export interface ProductImage {
+  _id: string;
+  variantId?: string;
+  fileName: string;
+  url: string;
+  sortOrder: number;
 }
 
 export interface Product {
@@ -120,6 +145,7 @@ export interface Product {
   category: string[];
   attributes: Record<string, string>;
   variants: ProductVariant[];
+  images: ProductImage[];
   status: "draft" | "published" | "archived";
   rating: { avg: number; count: number };
   tags: string[];
