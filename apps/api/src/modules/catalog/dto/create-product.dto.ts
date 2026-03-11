@@ -31,9 +31,8 @@ export class ProductVariantDto {
   compareAtPriceInCents?: number;
 
   @IsOptional()
-  @IsArray()
-  @IsString({ each: true })
-  images?: string[];
+  @IsObject()
+  attributes?: Record<string, string>;
 }
 
 export class CreateProductDto {
