@@ -6,5 +6,5 @@ interface LoginPageProps {
 
 export default async function LoginPage({ searchParams }: LoginPageProps) {
   const params = (await searchParams) ?? {};
-  return <LoginForm callbackUrl={params.callbackUrl} />;
+  return <LoginForm callbackUrl={params.callbackUrl} mode="customer" />;
 }
