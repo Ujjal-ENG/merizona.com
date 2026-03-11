@@ -4,7 +4,7 @@ import { revalidateTag } from "next/cache";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { apiFetch, ApiError } from "./api-client";
-import type { User, Vendor } from "../_lib/types";
+import type { User } from "../_lib/types";
 import type { LoginInput, RegisterInput } from "../_lib/validations/auth";
 
 interface AuthResponse {
@@ -27,27 +27,35 @@ export async function loginAction(
       forwardSetCookie: true,
     });
 
-    const vendor = await apiFetch<Vendor>("/vendor/profile", {
-      revalidate: 0,
-    }).catch(() => null);
-
     const redirectPath =
-      result.user.role === "platform_admin"
-        ? "/admin"
-        : vendor && vendor.status === "approved" && vendor.packageStatus === "active"
-          ? "/vendor"
-          : vendor
-            ? "/account/become-vendor"
-            : "/account";
+      result.user.role === "platform_admin" ? "/admin" : "/account";
 
     revalidateTag("user", "max");
     return { success: true, user: result.user, redirectPath };
   } catch (err) {
-    if (err instanceof ApiError) {
-      if (err.status === 401) return { success: false, error: "Invalid email or password" };
-      if (err.status === 429) return { success: false, error: "Too many attempts. Try again in a minute." };
-    }
-    return { success: false, error: "Something went wrong. Please try again." };
+    return { success: false, error: resolveAuthErrorMessage(err) };
+  }
+}
+
+export async function vendorLoginAction(
+  data: LoginInput,
+): Promise<{
+  success: boolean;
+  error?: string;
+  user?: AuthResponse["user"];
+  redirectPath?: string;
+}> {
+  try {
+    const result = await apiFetch<AuthResponse>("/auth/vendor/login", {
+      method: "POST",
+      body: JSON.stringify(data),
+      forwardSetCookie: true,
+    });
+
+    revalidateTag("user", "max");
+    return { success: true, user: result.user, redirectPath: "/vendor" };
+  } catch (err) {
+    return { success: false, error: resolveAuthErrorMessage(err) };
   }
 }
 
@@ -60,12 +68,26 @@ export async function registerAction(
       body: JSON.stringify(data),
       forwardSetCookie: true,
     });
+    revalidateTag("user", "max");
     return { success: true, user: result.user };
   } catch (err) {
-    if (err instanceof ApiError) {
-      if (err.status === 409) return { success: false, error: "Email already in use" };
-    }
-    return { success: false, error: "Registration failed. Please try again." };
+    return { success: false, error: resolveAuthErrorMessage(err) };
+  }
+}
+
+export async function vendorRegisterAction(
+  data: Omit<RegisterInput, "confirmPassword">,
+): Promise<{ success: boolean; error?: string; user?: AuthResponse["user"] }> {
+  try {
+    const result = await apiFetch<AuthResponse>("/auth/vendor/register", {
+      method: "POST",
+      body: JSON.stringify(data),
+      forwardSetCookie: true,
+    });
+    revalidateTag("user", "max");
+    return { success: true, user: result.user };
+  } catch (err) {
+    return { success: false, error: resolveAuthErrorMessage(err) };
   }
 }
 
@@ -79,7 +101,7 @@ export async function logoutAction() {
   cookieStore.delete("access_token");
   cookieStore.delete("refresh_token");
   revalidateTag("user", "max");
-  redirect("/login");
+  redirect("/");
 }
 
 export async function getCurrentUser(): Promise<User | null> {
@@ -90,5 +112,40 @@ export async function getCurrentUser(): Promise<User | null> {
     });
   } catch {
     return null;
+  }
+}
+
+function resolveAuthErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    const parsedMessage = parseApiErrorMessage(error.message);
+    if (parsedMessage) {
+      return parsedMessage;
+    }
+
+    if (error.status === 401) {
+      return "Invalid email or password";
+    }
+
+    if (error.status === 409) {
+      return "Email already in use";
+    }
+
+    if (error.status === 429) {
+      return "Too many attempts. Try again in a minute.";
+    }
+  }
+
+  return "Something went wrong. Please try again.";
+}
+
+function parseApiErrorMessage(payload: string): string | null {
+  try {
+    const parsed = JSON.parse(payload) as { message?: string | string[] };
+    if (Array.isArray(parsed.message)) {
+      return parsed.message.join(", ");
+    }
+    return parsed.message ?? null;
+  } catch {
+    return payload || null;
   }
 }
