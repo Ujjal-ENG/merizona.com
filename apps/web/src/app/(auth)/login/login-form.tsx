@@ -18,13 +18,17 @@ import {
   CardTitle,
 } from "../../_components/ui/card";
 import { loginSchema, type LoginInput } from "../../_lib/validations/auth";
-import { loginAction } from "../../_services/auth.service";
+import { loginAction, vendorLoginAction } from "../../_services/auth.service";
 
 interface LoginFormProps {
   callbackUrl?: string;
+  mode?: "customer" | "vendor";
 }
 
-export function LoginForm({ callbackUrl }: LoginFormProps) {
+export function LoginForm({
+  callbackUrl,
+  mode = "customer",
+}: LoginFormProps) {
   const router = useRouter();
   const [serverError, setServerError] = useState<string | null>(null);
 
@@ -38,7 +42,8 @@ export function LoginForm({ callbackUrl }: LoginFormProps) {
 
   async function onSubmit(data: LoginInput) {
     setServerError(null);
-    const result = await loginAction(data);
+    const result =
+      mode === "vendor" ? await vendorLoginAction(data) : await loginAction(data);
 
     if (result.success) {
       const safeCallback =
@@ -55,10 +60,14 @@ export function LoginForm({ callbackUrl }: LoginFormProps) {
   }
 
   return (
-    <Card>
+    <Card className="mx-auto w-full max-w-sm">
       <CardHeader className="text-center">
-        <CardTitle>Welcome back</CardTitle>
-        <CardDescription>Sign in to your customer or vendor account</CardDescription>
+        <CardTitle>{mode === "vendor" ? "Vendor portal" : "Welcome back"}</CardTitle>
+        <CardDescription>
+          {mode === "vendor"
+            ? "Sign in to manage vendor verification, products, and orders"
+            : "Sign in to your customer or admin account"}
+        </CardDescription>
       </CardHeader>
 
       <form onSubmit={handleSubmit(onSubmit)}>
@@ -108,16 +117,30 @@ export function LoginForm({ callbackUrl }: LoginFormProps) {
 
           <Button type="submit" className="w-full" disabled={isSubmitting}>
             {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Sign In
+            {mode === "vendor" ? "Enter Vendor Portal" : "Sign In"}
           </Button>
         </CardContent>
       </form>
 
       <CardFooter className="justify-center text-sm text-muted-foreground">
-        Don&apos;t have an account?{" "}
-        <Link href="/register" className="ml-1 text-primary hover:underline">
-          Sign up
-        </Link>
+        {mode === "vendor" ? (
+          <>
+            Need a vendor account?
+            <Link
+              href="/vendor/register"
+              className="ml-1 text-primary hover:underline"
+            >
+              Register
+            </Link>
+          </>
+        ) : (
+          <>
+            Don&apos;t have an account?{" "}
+            <Link href="/register" className="ml-1 text-primary hover:underline">
+              Sign up
+            </Link>
+          </>
+        )}
       </CardFooter>
     </Card>
   );
