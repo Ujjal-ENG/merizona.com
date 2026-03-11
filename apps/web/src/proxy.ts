@@ -1,7 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-const PROTECTED_PATHS = ["/admin", "/vendor", "/account", "/checkout"];
-const AUTH_PATHS = ["/login", "/register"];
+const AUTH_PATHS = ["/login", "/register", "/vendor/login", "/vendor/register"];
 
 function isSafeCallbackPath(path: string | null): path is string {
   return Boolean(path && path.startsWith("/") && !path.startsWith("//"));
@@ -10,8 +9,16 @@ function isSafeCallbackPath(path: string | null): path is string {
 export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
-  const isProtected = PROTECTED_PATHS.some((p) => pathname.startsWith(p));
+  const isVendorAuthPath = ["/vendor/login", "/vendor/register"].some((p) =>
+    pathname.startsWith(p),
+  );
   const isAuthPage = AUTH_PATHS.some((p) => pathname.startsWith(p));
+  const isVendorPath = pathname.startsWith("/vendor");
+  const isAccountPath = pathname.startsWith("/account");
+  const isAdminPath = pathname.startsWith("/admin");
+  const isCheckoutPath = pathname.startsWith("/checkout");
+  const isProtected =
+    isVendorPath || isAccountPath || isAdminPath || isCheckoutPath;
 
   // Skip non-relevant paths fast
   if (!isProtected && !isAuthPage) return NextResponse.next();
@@ -27,13 +34,32 @@ export async function proxy(request: NextRequest) {
         return NextResponse.redirect(new URL(callbackUrl, request.url));
       }
 
+      try {
+        const [, payloadB64] = accessToken.value.split(".");
+        const payload = JSON.parse(
+          Buffer.from(payloadB64, "base64url").toString(),
+        ) as {
+          role?: string;
+        };
+
+        if (payload.role === "vendor") {
+          return NextResponse.redirect(new URL("/vendor", request.url));
+        }
+
+        if (payload.role === "platform_admin") {
+          return NextResponse.redirect(new URL("/admin", request.url));
+        }
+      } catch {
+        // Fall through to default redirect.
+      }
+
       return NextResponse.redirect(new URL("/account", request.url));
     }
     return NextResponse.next();
   }
 
   if (isProtected && !accessToken) {
-    const loginUrl = new URL("/login", request.url);
+    const loginUrl = new URL(isVendorPath ? "/vendor/login" : "/login", request.url);
     loginUrl.searchParams.set("callbackUrl", `${pathname}${search}`);
     return NextResponse.redirect(loginUrl);
   }
@@ -51,22 +77,34 @@ export async function proxy(request: NextRequest) {
       };
 
       const isAdmin = payload.role === "platform_admin";
-      const isVendorMember = Boolean(
-        payload.vendorId && payload.membership?.role,
-      );
+      const isVendorAccount = payload.role === "vendor";
+      const isVendorMember = Boolean(payload.vendorId && payload.membership?.role);
+      const isVendorVerifyPath = pathname === "/vendor/verify";
 
-      if (pathname.startsWith("/admin") && !isAdmin) {
-        const redirect = isVendorMember ? "/vendor" : "/account";
+      if (isAdminPath && !isAdmin) {
+        const redirect = isVendorAccount ? "/vendor" : "/account";
         if (!pathname.startsWith(redirect)) {
           return NextResponse.redirect(new URL(redirect, request.url));
         }
       }
 
-      if (pathname.startsWith("/vendor") && !isVendorMember) {
+      if (isAccountPath && isVendorAccount) {
+        return NextResponse.redirect(new URL("/vendor", request.url));
+      }
+
+      if (isVendorPath && isVendorAuthPath) {
+        return NextResponse.next();
+      }
+
+      if (isVendorPath && !isVendorAccount) {
         const redirect = isAdmin ? "/admin" : "/account";
         if (!pathname.startsWith(redirect)) {
           return NextResponse.redirect(new URL(redirect, request.url));
         }
+      }
+
+      if (isVendorPath && isVendorAccount && !isVendorMember && !isVendorVerifyPath) {
+        return NextResponse.redirect(new URL("/vendor/verify", request.url));
       }
     } catch {
       // Malformed token — let NestJS handle the 401
