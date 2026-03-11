@@ -15,7 +15,7 @@ export default function AuthLayout({
         <Package className="h-6 w-6" />
         Merizona
       </Link>
-      <div className="w-full max-w-sm">{children}</div>
+      <div className="w-full max-w-5xl">{children}</div>
     </div>
   );
 }
