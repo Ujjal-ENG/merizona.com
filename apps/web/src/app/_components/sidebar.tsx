@@ -43,7 +43,6 @@ const ACCOUNT_NAV: NavItem[] = [
   { href: "/account", label: "Profile", icon: Users },
   { href: "/account/orders", label: "Orders", icon: ShoppingBag },
   { href: "/account/addresses", label: "Addresses", icon: MapPin },
-  { href: "/account/become-vendor", label: "Become Vendor", icon: Store },
 ];
 
 interface SidebarProps {
