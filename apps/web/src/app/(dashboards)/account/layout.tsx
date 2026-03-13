@@ -9,6 +9,8 @@ export default async function AccountLayout({
 }) {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
+  if (user.role === "vendor") redirect("/vendor");
+  if (user.role === "platform_admin") redirect("/admin");
 
   return (
     <div className="flex h-screen overflow-hidden">
