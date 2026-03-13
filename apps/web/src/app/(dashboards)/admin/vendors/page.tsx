@@ -9,7 +9,11 @@ import {
   TableRow,
 } from "../../../_components/ui/table";
 import { formatDate, formatPrice } from "../../../_lib/utils";
-import { VENDOR_PACKAGE_LABELS, VENDOR_STATUS_LABELS } from "../../../_lib/constants";
+import {
+  VENDOR_PACKAGE_LABELS,
+  VENDOR_STATUS_LABELS,
+  VENDOR_VERIFICATION_LABELS,
+} from "../../../_lib/constants";
 import { VendorActions } from "./vendor-actions";
 
 export const dynamic = "force-dynamic";
@@ -63,6 +67,7 @@ export default async function AdminVendorsPage({
               <TableHead>Vendor</TableHead>
               <TableHead>Legal Name</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead>Verification</TableHead>
               <TableHead>Package</TableHead>
               <TableHead>Commission</TableHead>
               <TableHead>Joined</TableHead>
@@ -72,7 +77,7 @@ export default async function AdminVendorsPage({
           <TableBody>
             {vendors.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center text-muted-foreground h-24">
+                <TableCell colSpan={8} className="text-center text-muted-foreground h-24">
                   No vendors found.
                 </TableCell>
               </TableRow>
@@ -93,6 +98,19 @@ export default async function AdminVendorsPage({
                   <TableCell>
                     <Badge variant={statusColors[vendor.status] ?? "outline"}>
                       {VENDOR_STATUS_LABELS[vendor.status] ?? vendor.status}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <Badge
+                      variant={
+                        vendor.verificationStatus === "verified"
+                          ? "default"
+                          : vendor.verificationStatus === "rejected"
+                            ? "destructive"
+                            : "secondary"
+                      }
+                    >
+                      {VENDOR_VERIFICATION_LABELS[vendor.verificationStatus]}
                     </Badge>
                   </TableCell>
                   <TableCell className="text-sm">
