@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Loader2 } from "lucide-react";
+import { z } from "zod";
 import { Button } from "../../../../../_components/ui/button";
 import { Input } from "../../../../../_components/ui/input";
 import { Label } from "../../../../../_components/ui/label";
@@ -22,12 +23,24 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../../../../../_components/ui/select";
+import { ApiError } from "../../../../../_services/api-client";
 import { updateProduct } from "../../../../../_services/catalog.service";
-import {
-  updateProductSchema,
-  type UpdateProductInput,
-} from "../../../../../_lib/validations/product";
 import type { Product } from "../../../../../_lib/types";
+
+const productEditFormSchema = z.object({
+  title: z
+    .string()
+    .trim()
+    .min(2, "Title must be at least 2 characters")
+    .max(200, "Title must be at most 200 characters"),
+  description: z
+    .string()
+    .trim()
+    .max(5000, "Description must be at most 5000 characters"),
+  status: z.enum(["draft", "published", "archived"]),
+});
+
+type ProductEditFormInput = z.infer<typeof productEditFormSchema>;
 
 export function ProductEditForm({ product }: { product: Product }) {
   const router = useRouter();
@@ -39,28 +52,29 @@ export function ProductEditForm({ product }: { product: Product }) {
     setValue,
     watch,
     formState: { errors, isSubmitting },
-  } = useForm<UpdateProductInput>({
-    resolver: zodResolver(updateProductSchema),
+  } = useForm<ProductEditFormInput>({
+    resolver: zodResolver(productEditFormSchema),
     defaultValues: {
       title: product.title,
-      description: product.description,
-      category: product.category,
-      attributes: product.attributes,
-      variants: product.variants,
+      description: product.description ?? "",
       status: product.status,
     },
   });
 
   const currentStatus = watch("status");
 
-  async function onSubmit(data: UpdateProductInput) {
+  async function onSubmit(data: ProductEditFormInput) {
     setError(null);
     try {
-      await updateProduct(product._id, data);
+      await updateProduct(product._id, {
+        title: data.title.trim(),
+        description: data.description.trim(),
+        status: data.status,
+      });
       router.push("/vendor/products");
       router.refresh();
-    } catch {
-      setError("Failed to update product. Please try again.");
+    } catch (submitError) {
+      setError(resolveProductUpdateError(submitError));
     }
   }
 
@@ -95,10 +109,15 @@ export function ProductEditForm({ product }: { product: Product }) {
 
           <div className="space-y-1.5">
             <Label>Status</Label>
+            <input type="hidden" {...register("status")} />
             <Select
               value={currentStatus}
               onValueChange={(v) =>
-                setValue("status", v as "draft" | "published" | "archived")
+                setValue("status", v as ProductEditFormInput["status"], {
+                  shouldDirty: true,
+                  shouldTouch: true,
+                  shouldValidate: true,
+                })
               }
             >
               <SelectTrigger>
@@ -136,4 +155,24 @@ export function ProductEditForm({ product }: { product: Product }) {
       </div>
     </form>
   );
+}
+
+function resolveProductUpdateError(error: unknown): string {
+  if (error instanceof ApiError || error instanceof Error) {
+    try {
+      const parsed = JSON.parse(error.message) as { message?: string | string[] };
+      if (Array.isArray(parsed.message)) {
+        return parsed.message.join(", ");
+      }
+      if (parsed.message) {
+        return parsed.message;
+      }
+    } catch {
+      if (error.message) {
+        return error.message;
+      }
+    }
+  }
+
+  return "Failed to update product. Please try again.";
 }
