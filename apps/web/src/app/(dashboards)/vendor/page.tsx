@@ -6,8 +6,11 @@ import {
   CardHeader,
   CardTitle,
 } from "../../_components/ui/card";
+import { Badge } from "../../_components/ui/badge";
 import { Button } from "../../_components/ui/button";
 import { apiFetch } from "../../_services/api-client";
+import { getVendorVerification } from "../../_services/vendor.service";
+import { VENDOR_VERIFICATION_LABELS } from "../../_lib/constants";
 
 interface VendorStats {
   totalProducts?: number;
@@ -27,6 +30,7 @@ async function getVendorStats(): Promise<VendorStats> {
 
 export default async function VendorDashboard() {
   const stats = await getVendorStats();
+  const verification = await getVendorVerification().catch(() => null);
 
   return (
     <div className="space-y-6">
@@ -46,6 +50,31 @@ export default async function VendorDashboard() {
           </Button>
         </div>
       </div>
+
+      {verification && verification.verificationStatus !== "verified" ? (
+        <Card className="border-amber-200 bg-amber-50/50">
+          <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <CardTitle>Business verification</CardTitle>
+              <p className="mt-1 text-sm text-muted-foreground">
+                You can manage products now. Complete verification when you are
+                ready to finish business onboarding.
+              </p>
+            </div>
+            <Badge variant="secondary">
+              {VENDOR_VERIFICATION_LABELS[verification.verificationStatus]}
+            </Badge>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-muted-foreground">
+              Submit your business documents from the verification page.
+            </p>
+            <Button asChild variant="outline">
+              <Link href="/vendor/verify">Open Verification</Link>
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card>
