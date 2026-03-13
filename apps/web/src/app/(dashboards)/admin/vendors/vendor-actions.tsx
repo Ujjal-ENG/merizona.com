@@ -1,11 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "../../../_components/ui/button";
 import {
   activateVendorPackage,
-  approveVendor,
   deactivateVendorPackage,
   suspendVendor,
 } from "../../../_services/vendor.service";
@@ -17,17 +17,12 @@ export function VendorActions({ vendor }: { vendor: Vendor }) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   async function handle(
-    action:
-      | "approve"
-      | "suspend"
-      | "activate-package"
-      | "deactivate-package",
+    action: "suspend" | "activate-package" | "deactivate-package",
   ) {
     setErrorMessage(null);
     setLoading(action);
     try {
-      if (action === "approve") await approveVendor(vendor._id);
-      else if (action === "suspend") await suspendVendor(vendor._id);
+      if (action === "suspend") await suspendVendor(vendor._id);
       else if (action === "activate-package") await activateVendorPackage(vendor._id);
       else await deactivateVendorPackage(vendor._id);
       router.refresh();
@@ -58,44 +53,12 @@ export function VendorActions({ vendor }: { vendor: Vendor }) {
   return (
     <div className="space-y-1">
       <div className="flex gap-2 justify-end">
-        {vendor.status === "pending" && (
-          <>
-            <Button
-              size="sm"
-              variant="default"
-              onClick={() => handle("approve")}
-              disabled={loading !== null || vendor.packageStatus !== "active"}
-              title={
-                vendor.packageStatus !== "active"
-                  ? "Activate package first, then approve vendor"
-                  : undefined
-              }
-            >
-              {loading === "approve" ? "Approving…" : "Approve"}
-            </Button>
-            {vendor.packageStatus !== "active" && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => handle("activate-package")}
-                disabled={loading !== null}
-              >
-                {loading === "activate-package" ? "Enabling…" : "Enable Package"}
-              </Button>
-            )}
-          </>
-        )}
+        <Button size="sm" variant="outline" asChild>
+          <Link href={`/admin/vendors/${vendor._id}`}>Review</Link>
+        </Button>
 
-        {vendor.status === "approved" && (
+        {vendor.status !== "suspended" && (
           <>
-            <Button
-              size="sm"
-              variant="destructive"
-              onClick={() => handle("suspend")}
-              disabled={loading !== null}
-            >
-              {loading === "suspend" ? "Suspending…" : "Suspend"}
-            </Button>
             {vendor.packageStatus === "active" ? (
               <Button
                 size="sm"
@@ -115,18 +78,17 @@ export function VendorActions({ vendor }: { vendor: Vendor }) {
                 {loading === "activate-package" ? "Enabling…" : "Enable Package"}
               </Button>
             )}
+            {vendor.status === "approved" && (
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => handle("suspend")}
+                disabled={loading !== null}
+              >
+                {loading === "suspend" ? "Suspending…" : "Suspend"}
+              </Button>
+            )}
           </>
-        )}
-
-        {vendor.status === "suspended" && (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => handle("approve")}
-            disabled={loading !== null}
-          >
-            {loading === "approve" ? "Restoring…" : "Restore"}
-          </Button>
         )}
       </div>
 
