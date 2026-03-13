@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "../../_services/auth.service";
-import { getMyVendorProfile } from "../../_services/vendor.service";
 import { Sidebar } from "../../_components/sidebar";
 
 export default async function VendorLayout({
@@ -11,18 +10,11 @@ export default async function VendorLayout({
   const user = await getCurrentUser();
 
   if (!user) {
-    redirect("/");
+    redirect("/vendor/login");
   }
 
-  const vendor = await getMyVendorProfile().catch(() => null);
-  if (!vendor) {
-    redirect("/account/become-vendor");
-  }
-
-  if (vendor.status !== "approved" || vendor.packageStatus !== "active") {
-    redirect(
-      `/account/become-vendor?status=${encodeURIComponent(vendor.status)}`,
-    );
+  if (user.role !== "vendor") {
+    redirect(user.role === "platform_admin" ? "/admin" : "/account");
   }
 
   return (
