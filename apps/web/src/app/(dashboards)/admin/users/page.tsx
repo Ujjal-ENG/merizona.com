@@ -37,8 +37,7 @@ export default async function AdminUsersPage({
 
   const roleColors: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
     platform_admin: "default",
-    vendor_owner: "secondary",
-    vendor_staff: "outline",
+    vendor: "secondary",
     customer: "outline",
   };
 
