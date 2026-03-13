@@ -31,16 +31,22 @@ export default async function ProductPage({ params }: Props) {
     notFound();
   }
 
+  const primaryVariantId = product.variants[0]?._id;
+  const primaryImages = product.images.filter(
+    (image) => image.variantId === primaryVariantId || !image.variantId,
+  );
+  const primaryImageUrl = primaryImages[0]?.url;
+
   return (
     <div className="container py-8">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
         {/* Images */}
         <div className="space-y-3">
-          {product.variants[0]?.images?.[0] ? (
+          {primaryImageUrl ? (
             <div className="relative aspect-square rounded-lg overflow-hidden bg-muted">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={product.variants[0].images[0]}
+                src={primaryImageUrl}
                 alt={product.title}
                 className="object-cover w-full h-full"
               />
@@ -51,15 +57,19 @@ export default async function ProductPage({ params }: Props) {
             </div>
           )}
           {/* Thumbnail strip */}
-          {product.variants[0]?.images?.length > 1 && (
+          {primaryImages.length > 1 && (
             <div className="flex gap-2 overflow-x-auto">
-              {product.variants[0].images.map((img, i) => (
+              {primaryImages.map((image) => (
                 <div
-                  key={i}
+                  key={image._id}
                   className="relative w-16 h-16 shrink-0 rounded overflow-hidden border bg-muted"
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={img} alt="" className="object-cover w-full h-full" />
+                  <img
+                    src={image.url}
+                    alt=""
+                    className="object-cover w-full h-full"
+                  />
                 </div>
               ))}
             </div>
