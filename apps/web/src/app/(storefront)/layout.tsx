@@ -1,6 +1,5 @@
 import { Navbar } from "../_components/navbar";
 import { getCurrentUser } from "../_services/auth.service";
-import { getMyVendorProfile } from "../_services/vendor.service";
 
 export default async function StorefrontLayout({
   children,
@@ -12,14 +11,8 @@ export default async function StorefrontLayout({
 
   if (user?.role === "platform_admin") {
     dashboardHref = "/admin";
-  } else if (user) {
-    const vendor = await getMyVendorProfile().catch(() => null);
-
-    if (vendor && vendor.status === "approved" && vendor.packageStatus === "active") {
-      dashboardHref = "/vendor";
-    } else if (vendor) {
-      dashboardHref = "/account/become-vendor";
-    }
+  } else if (user?.role === "vendor") {
+    dashboardHref = "/vendor";
   }
 
   return (
