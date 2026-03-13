@@ -16,6 +16,10 @@ interface ProductCardProps {
 
 export function ProductCard({ product }: ProductCardProps) {
   const firstVariant = product.variants[0];
+  const firstImageUrl =
+    product.images.find(
+      (image) => image.variantId === firstVariant?._id || !image.variantId,
+    )?.url ?? null;
   const minPrice = Math.min(...product.variants.map((v) => v.priceInCents));
   const maxPrice = Math.max(...product.variants.map((v) => v.priceInCents));
   const hasVariants = product.variants.length > 1;
@@ -24,9 +28,9 @@ export function ProductCard({ product }: ProductCardProps) {
     <Card className="group overflow-hidden hover:shadow-md transition-shadow">
       <Link href={`/products/${product.slug}`}>
         <div className="relative aspect-square overflow-hidden bg-muted">
-          {firstVariant?.images?.[0] ? (
+          {firstImageUrl ? (
             <Image
-              src={firstVariant.images[0]}
+              src={firstImageUrl}
               alt={product.title}
               fill
               className="object-cover transition-transform group-hover:scale-105"
