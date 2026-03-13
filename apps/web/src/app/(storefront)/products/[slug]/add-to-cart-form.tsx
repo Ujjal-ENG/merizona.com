@@ -15,6 +15,10 @@ export function AddToCartForm({ product }: { product: Product }) {
   const [quantity, setQuantity] = useState(1);
   const [added, setAdded] = useState(false);
   const addItem = useCart((state) => state.addItem);
+  const selectedImageUrl =
+    product.images.find(
+      (image) => image.variantId === selectedVariant._id || !image.variantId,
+    )?.url ?? "";
 
   const handleAddToCart = () => {
     addItem({
@@ -24,7 +28,7 @@ export function AddToCartForm({ product }: { product: Product }) {
       variantLabel: selectedVariant.label,
       priceInCents: selectedVariant.priceInCents,
       quantity,
-      imageUrl: selectedVariant.images?.[0] ?? "",
+      imageUrl: selectedImageUrl,
       vendorId: product.vendorId,
       vendorName: product.vendorName ?? "",
     });
