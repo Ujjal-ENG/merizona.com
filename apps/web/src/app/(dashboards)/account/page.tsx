@@ -12,7 +12,7 @@ export default async function AccountProfilePage() {
       <div className="flex items-start justify-between gap-4">
         <h1 className="text-2xl font-bold">Profile</h1>
         <Button asChild variant="outline" size="sm">
-          <Link href="/account/become-vendor">Become Vendor</Link>
+          <Link href="/vendor/register">Open Vendor Portal</Link>
         </Button>
       </div>
       <p className="text-muted-foreground text-sm">{user.email}</p>
